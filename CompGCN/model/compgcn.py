@@ -79,7 +79,7 @@ class CompGCN_W(nn.Module):
         self.edge_weight = edge_weight # [E]
         self.n_layer = n_layer
 
-        self.init_embed = self.get_param([self.num_ent, self.init_dim])  # initial embedding for entities
+        # self.init_embed = self.get_param([self.num_ent, self.init_dim])  # initial embedding for entities
         if self.num_base > 0:
             # linear combination of a set of basis vectors
             self.init_rel = self.get_param([self.num_base, self.init_dim])
@@ -92,6 +92,7 @@ class CompGCN_W(nn.Module):
         self.conv2 = CompGCNCov(self.gcn_dim, self.embed_dim, self.act, conv_bias, gcn_drop,
                                 opn) if n_layer == 2 else None
         self.bias = nn.Parameter(torch.zeros(self.num_ent))
+        self.bias_bert = nn.Parameter(torch.zeros(self.num_ent))
 
     def get_param(self, shape):
         param = nn.Parameter(torch.Tensor(*shape))
@@ -101,7 +102,7 @@ class CompGCN_W(nn.Module):
     def calc_loss(self, pred, label):
         return self.loss(pred, label)
 
-    def forward_base(self, nf, rf, g, drop1=None, drop2=None):
+    def forward_base(self, nf, g, subj, rel, drop1=None, drop2=None):
         """
         :param g: graph
         :param sub: subjects in a batch [batch]
@@ -112,13 +113,16 @@ class CompGCN_W(nn.Module):
                  rel_emb: [num_rel*2, D]
                  x: [num_ent, D]
         """
-        x, r = nf, rf  # embedding of relations
+        # x, r = nf, rf  # embedding of relations
+        x, r = nf, self.init_rel  # embedding of relations
         x, r = self.conv1(g, x, r, self.edge_type, self.edge_norm, self.edge_weight)
         x = drop1(x)  # embeddings of entities [num_ent, dim]
         x, r = self.conv2(g, x, r, self.edge_type, self.edge_norm, self.edge_weight) if self.n_layer == 2 else (x, r)
         x = drop2(x) if self.n_layer == 2 else x
+        sub_emb = torch.index_select(x, 0, subj)  # filter out embeddings of subjects in this batch
+        rel_emb = torch.index_select(r, 0, rel)  # filter out embeddings of relations in this batch
 
-        return x, r, x
+        return sub_emb, rel_emb, x
 
 
 class CompGCN_DistMult(CompGCN):
@@ -254,7 +258,7 @@ class CompGCN_ConvE_W(CompGCN_W):
         :param k_w: width of 2D reshape
         """
         super(CompGCN_ConvE_W, self).__init__(num_ent, num_rel, num_base, init_dim, gcn_dim, embed_dim, n_layer,
-                                            edge_type, edge_norm, bias, gcn_drop, opn)
+                                            edge_type, edge_norm, bias, gcn_drop, opn, m=0.7)
         self.hid_drop, self.input_drop, self.conve_hid_drop, self.feat_drop = hid_drop, input_drop, conve_hid_drop, feat_drop
         self.num_filt = num_filt
         self.ker_sz, self.k_w, self.k_h = ker_sz, k_w, k_h
@@ -276,6 +280,13 @@ class CompGCN_ConvE_W(CompGCN_W):
         self.flat_sz = flat_sz_h * flat_sz_w * self.num_filt
         self.fc = torch.nn.Linear(self.flat_sz, self.embed_dim)  # fully connected projection
 
+        self.m = m
+        self.mlp_bert = torch.nn.Linear(self.rel_fs, self.embed_dim)
+        self.conv2d_bert = torch.nn.Conv2d(in_channels=1, out_channels=self.num_filt,
+                                      kernel_size=(self.ker_sz, self.ker_sz), stride=1, padding=0, bias=bias)
+        self.fc_bert = torch.nn.Linear(self.flat_sz, self.embed_dim)
+
+
     def concat(self, ent_embed, rel_embed):
         """
         :param ent_embed: [batch_size, embed_dim]
@@ -289,14 +300,14 @@ class CompGCN_ConvE_W(CompGCN_W):
         stack_input = stack_input.reshape(-1, 1, 2 * self.k_h, self.k_w)  # reshape to 2D [batch, 1, 2*k_h, k_w]
         return stack_input
 
-    def forward(self, nf, rf, g):
+    def forward(self, nf, g, subj, rel, rf):
         """
         # :param g: dgl graph
         :param sub: subject in batch [batch_size]
         :param rel: relation in batch [batch_size]
         :return: score: [batch_size, ent_num], the prob in link-prediction
         """
-        sub_emb, rel_emb, all_ent = self.forward_base(nf, rf, g, self.drop, self.input_drop)
+        sub_emb, rel_emb, all_ent = self.forward_base(nf, g, subj, rel, self.drop, self.input_drop)
         stack_input = self.concat(sub_emb, rel_emb)  # [batch_size, 1, 2*k_h, k_w]
         x = self.bn0(stack_input)
         x = self.conv2d(x)  # [batch_size, num_filt, flat_sz_h, flat_sz_w]
@@ -310,7 +321,26 @@ class CompGCN_ConvE_W(CompGCN_W):
         x = F.relu(x)
         x = torch.mm(x, all_ent.transpose(1, 0))  # [batch_size, ent_num]
         x += self.bias.expand_as(x)
-        score = torch.sigmoid(x)
+        gcn_score = torch.sigmoid(x)
+
+        x = self.mlp_bert(rf)
+        x = self.bn2(rf)
+        x = F.relu(rf)
+        x = self.concat(torch.index_select(nf, 0, subj), x)
+        x = self.bn0(x)
+        x = self.conv2d_bert(x)
+        x = self.bn1(x)
+        x = F.relu(x)
+        x = self.feature_drop(x)
+        x = x.view(-1, self.flat_sz)
+        x = self.fc_bert(x)
+        x = self.hidden_drop(x)
+        x = self.bn2(x)
+        x = F.relu(x)
+        x = torch.mm(x, all_ent.transpose(1, 0))
+        x += self.bias_bert.expand_as(x)
+        bert_score = torch.sigmoid(x)
+        score = gcn_score*self.m + bert_score*(1-self.m)
         return score
 
 

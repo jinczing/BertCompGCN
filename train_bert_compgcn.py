@@ -15,25 +15,59 @@ import sys
 import logging
 from datetime import datetime
 from torch.optim import lr_scheduler
-from model import BertGCN, BertGAT
+from CompGCN.model import CompGCN_ConvE_W
+import csv
+import tqdm
+import ast
+from CompGCN.utils import TrainDataset, TestDataset
+from collections import defaultdict as ddict
+from itertools import combinations
+import random
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--max_length', type=int, default=128, help='the input length for bert')
 parser.add_argument('--batch_size', type=int, default=64)
 parser.add_argument('-m', '--m', type=float, default=0.7, help='the factor balancing BERT and GCN prediction')
 parser.add_argument('--nb_epochs', type=int, default=50)
-parser.add_argument('--bert_init', type=str, default='roberta-base',
-                    choices=['roberta-base', 'roberta-large', 'bert-base-uncased', 'bert-large-uncased'])
+parser.add_argument('--bert_init', type=str, default='hfl/chinese-macbert-base',
+                    choices=['hfl/chinese-macbert-base', 'roberta-base', 'roberta-large', 'bert-base-uncased', 'bert-large-uncased'])
 parser.add_argument('--pretrained_bert_ckpt', default=None)
-parser.add_argument('--dataset', default='20ng', choices=['20ng', 'R8', 'R52', 'ohsumed', 'mr'])
+parser.add_argument('--dataset', default='agri_doc', choices=['agri_doc'])
+parser.add_argument('--rel_dir', type=str, default='./rel')
 parser.add_argument('--checkpoint_dir', default=None, help='checkpoint directory, [bert_init]_[gcn_model]_[dataset] if not specified')
-parser.add_argument('--gcn_model', type=str, default='gcn', choices=['gcn', 'gat'])
+parser.add_argument('--gcn_model', type=str, default='compgcn', choices=['compgcn'])
 parser.add_argument('--gcn_layers', type=int, default=2)
-parser.add_argument('--n_hidden', type=int, default=200, help='the dimension of gcn hidden layer, the dimension for gat is n_hidden * heads')
-parser.add_argument('--heads', type=int, default=8, help='the number of attentionn heads for gat')
-parser.add_argument('--dropout', type=float, default=0.5)
 parser.add_argument('--gcn_lr', type=float, default=1e-3)
 parser.add_argument('--bert_lr', type=float, default=1e-5)
+parser.add_argument('--train_val_ratio', type=float, default=0.9)
+
+# compgcn arguments
+parser.add_argument('--name', default='test_run', help='Set run name for saving/restoring models')
+parser.add_argument('--score_func', dest='score_func', default='conve',
+                    help='Score Function for Link prediction')
+parser.add_argument('--opn', dest='opn', default='mult', help='Composition Operation to be used in CompGCN')
+parser.add_argument('--num_workers', type=int, default=8, help='Number of processes to construct batches')
+parser.add_argument('--bias', dest='bias', action='store_true', help='Whether to use bias in the model')
+parser.add_argument('--num_bases', dest='num_bases', default=-1, type=int,
+                    help='Number of basis relation vectors to use')
+parser.add_argument('--init_dim', dest='init_dim', default=100, type=int,
+                    help='Initial dimension size for entities and relations')
+parser.add_argument('--gcn_dim', dest='gcn_dim', default=200, type=int, help='Number of hidden units in GCN')
+parser.add_argument('--embed_dim', dest='embed_dim', default=None, type=int,
+                    help='Embedding dimension to give as input to score function')
+parser.add_argument('--gcn_drop', dest='gcn_drop', default=0.5, type=float, help='Dropout to use in GCN Layer')
+parser.add_argument('--hid_drop', dest='hid_drop', default=0.3, type=float, help='Dropout after GCN')
+
+# ConvE specific hyperparameters
+parser.add_argument('--conve_hid_drop', dest='conve_hid_drop', default=0.3, type=float,
+                    help='ConvE: Hidden dropout')
+parser.add_argument('--feat_drop', dest='feat_drop', default=0.2, type=float, help='ConvE: Feature Dropout')
+parser.add_argument('--input_drop', dest='input_drop', default=0.2, type=float, help='ConvE: Stacked Input Dropout')
+parser.add_argument('--k_w', dest='k_w', default=20, type=int, help='ConvE: k_w')
+parser.add_argument('--k_h', dest='k_h', default=10, type=int, help='ConvE: k_h')
+parser.add_argument('--num_filt', dest='num_filt', default=200, type=int,
+                    help='ConvE: Number of filters in convolution')
+parser.add_argument('--ker_sz', dest='ker_sz', default=7, type=int, help='ConvE: Kernel size to use')
 
 args = parser.parse_args()
 max_length = args.max_length
@@ -72,6 +106,7 @@ logger.setLevel(logging.INFO)
 
 cpu = th.device('cpu')
 gpu = th.device('cuda:0')
+device = gpu
 
 logger.info('arguments:')
 logger.info(str(args))
@@ -80,55 +115,153 @@ logger.info('checkpoints will be saved in {}'.format(ckpt_dir))
 
 
 # Data Preprocess
-adj, features, y_train, y_val, y_test, train_mask, val_mask, test_mask, train_size, test_size = load_corpus(dataset)
-'''
-adj: n*n sparse adjacency matrix
-y_train, y_val, y_test: n*c matrices
-train_mask, val_mask, test_mask: n-d bool array
-'''
+paths = [
+    'key_pims','key_sims','ne_pims','ne_sims','ws_pims','ws_sims',
+'bert_similarities','bert_features','key_inclusions','ne_inclusions',
+'ws_inclusions','matching_table','key_tf_idfs','ne_tf_idfs','ws_tf_idfs',
+'key_berts','ne_berts','ws_berts'
+]
+data_paths = {}
+for path in os.listdir(args.rel_path):
+    data_paths[path] = os.path.join(args.rel_path, path)
+
+g, edge_type, edge_weight, edge_norm, features, word_num, doc_num, doc_mask, test_mask = load_multi_relations_corpus(data_paths)
+edge_type = torch.tensor(edge_type).to(device)
+edge_weight = torch.Tensor(edge_weight).to(device)
+edge_norm = torch.Tensor(edge_norm).to(device)
+
 
 # compute number of real train/val/test/word nodes and number of classes
-nb_node = features.shape[0]
-nb_train, nb_val, nb_test = train_mask.sum(), val_mask.sum(), test_mask.sum()
-nb_word = nb_node - nb_train - nb_val - nb_test
-nb_class = y_train.shape[1]
+nb_node = g.num_nodes()
+nb_edge = len(edge_type)
+nb_train, nb_val = doc_num*args.train_val_ratio, doc_num*(1-args.train_val_ratio)
+nb_test
+nb_word = word_num
 
 # instantiate model according to class number
-if gcn_model == 'gcn':
-    model = BertGCN(nb_class=nb_class, pretrained_model=bert_init, m=m, gcn_layers=gcn_layers,
-                    n_hidden=n_hidden, dropout=dropout)
-else:
-    model = BertGAT(nb_class=nb_class, pretrained_model=bert_init, m=m, gcn_layers=gcn_layers,
-                    heads=heads, n_hidden=n_hidden, dropout=dropout)
+model = CompGCN_ConvE_W(num_ent=nb_node, num_rel=nb_edge, num_base=args.num_bases,
+                        init_dim=args.init_dim, gcn_dim=args.gcn_dim, embed_dim=args.embed_dim,
+                        n_layer=args.gcn_layers, edge_type=edge_type, edge_norm=edge_norm,
+                        bias=args.bias, gcn_drop=args.gcn_drop, opn=args.opn,
+                        hid_drop=args.hid_drop, input_drop=args.input_drop,
+                        conve_hid_drop=args.conve_hid_drop, feat_drop=args.feat_drop,
+                        num_filt=args.num_filt, ker_sz=args.ker_sz, k_h=args.k_h, k_w=args.k_w)
+model.to(device)
 
-
+bert_model = BertModel()
+bert_model.to(device)
 if pretrained_bert_ckpt is not None:
-    ckpt = th.load(pretrained_bert_ckpt, map_location=gpu)
-    model.bert_model.load_state_dict(ckpt['bert_model'])
-    model.classifier.load_state_dict(ckpt['classifier'])
+    ckpt = th.load(pretrained_bert_ckpt, map_location=device)
+    bert_model.load_state_dict(ckpt['bert_model'])
 
 
 # load documents and compute input encodings
-corpse_file = './data/corpus/' + dataset +'_shuffle.txt'
-with open(corpse_file, 'r') as f:
-    text = f.read()
-    text = text.replace('\\', '')
-    text = text.split('\n')
+with open('./SDR/data/datasets/agricultures_public_only/raw_data', newline="") as f:
+  reader = csv.reader(f)
+  all_articles = list(reader)
+
+docs = []
+for a_id, article in enumerate(tqdm.tqdm(all_articles)):
+  if not a_id:
+    continue
+  title, sections = article[0], ast.literal_eval(article[1])
+  sections = [s[1] for s in sections]
+  for i in range(len(sections)):
+    sections[i] = sections[i].split('。')
+  docs.append(sections)
 
 def encode_input(text, tokenizer):
     input = tokenizer(text, max_length=max_length, truncation=True, padding='max_length', return_tensors='pt')
 #     print(input.keys())
-    return input.input_ids, input.attention_mask
+    return input
+
+for i, doc in enumerate(docs):
+    for j, sec in enumerate(doc):
+        inputs = encode_input(sec, tokenizer)
+        docs[i][j] = inputs
+
+# build triplets
+triplets = {
+    'train_pos': [],
+    'train_neg': [],
+    'val_pos': [],
+    'val_neg': [],
+    'test': [],
+}
+
+# positive train and val
+pos_ids = torch.where(edge_type==10)[0]
+pos_ids = pos_ids[torch.randperm(pos_ids.size(0))]
+
+train_pos_ids = pos_ids[:int(pos_ids.size(0)*args.train_val_ratio)]
+val_pos_ids = pos_ids[int(pos_ids.size(0)*args.train_val_ratio):]
+
+s2o_train = ddict(set)
+for id in train_pos_ids:
+    subj, obj = g.edges()[0][id], g.edges()[1][id]
+    rel = 10
+    s2o_train[(subj, rel)].add(obj)
+for (subj, rel), obj in s2o_train.items():
+    triplets['train_pos'].append({'triple': (subj, rel, -1), 'label': list(obj)})
+s2o_val = ddict(set)
+for id in val_pos_ids:
+    subj, obj = g.edges()[0][id], g.edges()[1][id]
+    rel = 10
+    s2o_val[(subj, rel)].add(obj)
+for (subj, rel), obj in s2o_val.items():
+    triplets['val_pos'].append({'triple': (subj, rel, list(obj)), 'label': list(obj)})
+
+# negative train and val
+s2o_all = ddict(set)
+for id in pos_ids:
+    subj, obj = g.edges()[0][id], g.edges()[1][id]
+    rel = 10
+    s2o_all[(subj, rel)].add(obj)
+all_ids = combinations(g.nodes()[doc_mask], 2)
+neg_ids = []
+for i, (subj, obj) in enumerate(all_ids):
+    if len(s2o_all[subj, obj]) == 0:
+        neg_ids.append((subj, obj))
+# permute
+random.shuffle(neg_ids)
+train_neg_ids = neg_ids[:int(len(neg_ids)*args.train_val_ratio)]
+val_neg_ids = neg_ids[int(len(neg_ids)*args.train_val_ratio):]
+
+for subj, obj in train_neg_ids:
+    triplets['train_neg'].append({'triple': (subj, rel, -1), 'label': []})
+for subj, obj in val_neg_ids:
+    triplets['val_neg'].append({'triple': (subj, rel, []]), 'label': []})
+
+# test
+for subj, obj in combinations(g.nodes()[tset_mask], 2):
+    triplets['test'].append({'triple': (subj, rel, []), 'label': []})
+
+data_iter = {
+            'train': DataLoader(
+                TrainDataset(triplets['train_pos'], triplets['train_neg'], 
+                             nb_node, args),
+                batch_size=args.batch_size,
+                shuffle=True,
+                num_workers=args.num_workers
+            ),
+            'val': DataLoader(
+                TestDataset(triplets['val_pos'], triplets['val_neg'], 
+                            nb_node, args),
+                batch_size=args.batch_size,
+                shuffle=True,
+                num_workers=args.num_workers
+            ),
+            'test': DataLoader(
+                TestDataset(triplets['test'], test_mask.sum(), args),
+                batch_size=args.batch_size,
+                shuffle=True,
+                num_workers=args.num_workers
+            ),
+        }
 
 
-input_ids, attention_mask = encode_input(text, model.tokenizer)
-input_ids = th.cat([input_ids[:-nb_test], th.zeros((nb_word, max_length), dtype=th.long), input_ids[-nb_test:]])
-attention_mask = th.cat([attention_mask[:-nb_test], th.zeros((nb_word, max_length), dtype=th.long), attention_mask[-nb_test:]])
-
-# transform one-hot label to class ID for pytorch computation
-y = y_train + y_test + y_val
-y_train = y_train.argmax(axis=1)
-y = y.argmax(axis=1)
+# input_ids = th.cat([input_ids[:-nb_test], th.zeros((nb_word, max_length), dtype=th.long), input_ids[-nb_test:]])
+# attention_mask = th.cat([attention_mask[:-nb_test], th.zeros((nb_word, max_length), dtype=th.long), attention_mask[-nb_test:]])
 
 # document mask used for update feature
 doc_mask  = train_mask + val_mask + test_mask
@@ -179,7 +312,7 @@ def update_feature():
 
 
 optimizer = th.optim.Adam([
-        {'params': model.bert_model.parameters(), 'lr': bert_lr},
+        # {'params': model.bert_model.parameters(), 'lr': bert_lr},
         {'params': model.classifier.parameters(), 'lr': bert_lr},
         {'params': model.gcn.parameters(), 'lr': gcn_lr},
     ], lr=1e-3
