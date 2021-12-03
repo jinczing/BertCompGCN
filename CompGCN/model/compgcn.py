@@ -65,7 +65,7 @@ class CompGCN(nn.Module):
 
 class CompGCN_W(nn.Module):
     def __init__(self, num_ent, num_rel, num_base, init_dim, gcn_dim, embed_dim, n_layer, edge_type, edge_norm, 
-                 edge_weight, conv_bias=True, gcn_drop=0., opn='mult'):
+                 edge_weight, conv_bias=True, gcn_drop=0., opn='mult', word_features=None):
         super(CompGCN_W, self).__init__()
         self.act = torch.tanh
         self.loss = nn.BCELoss()
@@ -92,7 +92,9 @@ class CompGCN_W(nn.Module):
         self.conv2 = CompGCNCov(self.gcn_dim, self.embed_dim, self.act, conv_bias, gcn_drop,
                                 opn) if n_layer == 2 else None
         self.bias = nn.Parameter(torch.zeros(self.num_ent))
-        self.bias_bert = nn.Parameter(torch.zeros(self.num_ent))
+
+        self.word_features = word_features
+        self.word_num = word_features.size(0)
 
     def get_param(self, shape):
         param = nn.Parameter(torch.Tensor(*shape))
@@ -114,12 +116,12 @@ class CompGCN_W(nn.Module):
                  x: [num_ent, D]
         """
         # x, r = nf, rf  # embedding of relations
-        x, r = nf, self.init_rel  # embedding of relations
+        x, r = torch.cat([self.word_features, nf], dim=0), self.init_rel  # embedding of relations
         x, r = self.conv1(g, x, r, self.edge_type, self.edge_norm, self.edge_weight)
         x = drop1(x)  # embeddings of entities [num_ent, dim]
         x, r = self.conv2(g, x, r, self.edge_type, self.edge_norm, self.edge_weight) if self.n_layer == 2 else (x, r)
         x = drop2(x) if self.n_layer == 2 else x
-        sub_emb = torch.index_select(x, 0, subj)  # filter out embeddings of subjects in this batch
+        sub_emb = torch.index_select(x, 0, word_num+subj)  # filter out embeddings of subjects in this batch
         rel_emb = torch.index_select(r, 0, rel)  # filter out embeddings of relations in this batch
 
         return sub_emb, rel_emb, x
@@ -235,7 +237,7 @@ class CompGCN_ConvE(CompGCN):
 class CompGCN_ConvE_W(CompGCN_W):
     def __init__(self, num_ent, num_rel, num_base, init_dim, gcn_dim, embed_dim, n_layer, edge_type, edge_norm,
                  bias=True, gcn_drop=0., opn='mult', hid_drop=0., input_drop=0., conve_hid_drop=0., feat_drop=0.,
-                 num_filt=None, ker_sz=None, k_h=None, k_w=None):
+                 num_filt=None, ker_sz=None, k_h=None, k_w=None, word_features=None):
         """
         :param num_ent: number of entities
         :param num_rel: number of different relations
@@ -258,7 +260,7 @@ class CompGCN_ConvE_W(CompGCN_W):
         :param k_w: width of 2D reshape
         """
         super(CompGCN_ConvE_W, self).__init__(num_ent, num_rel, num_base, init_dim, gcn_dim, embed_dim, n_layer,
-                                            edge_type, edge_norm, bias, gcn_drop, opn, m=0.7)
+                                            edge_type, edge_norm, bias, gcn_drop, opn, m=0.7, word_features=word_features)
         self.hid_drop, self.input_drop, self.conve_hid_drop, self.feat_drop = hid_drop, input_drop, conve_hid_drop, feat_drop
         self.num_filt = num_filt
         self.ker_sz, self.k_w, self.k_h = ker_sz, k_w, k_h
@@ -277,14 +279,94 @@ class CompGCN_ConvE_W(CompGCN_W):
 
         flat_sz_h = int(2 * self.k_h) - self.ker_sz + 1  # height after conv
         flat_sz_w = self.k_w - self.ker_sz + 1  # width after conv
+        
         self.flat_sz = flat_sz_h * flat_sz_w * self.num_filt
         self.fc = torch.nn.Linear(self.flat_sz, self.embed_dim)  # fully connected projection
 
         self.m = m
-        self.mlp_bert = torch.nn.Linear(self.rel_fs, self.embed_dim)
-        self.conv2d_bert = torch.nn.Conv2d(in_channels=1, out_channels=self.num_filt,
-                                      kernel_size=(self.ker_sz, self.ker_sz), stride=1, padding=0, bias=bias)
-        self.fc_bert = torch.nn.Linear(self.flat_sz, self.embed_dim)
+
+        class BertPredictorDiff(nn.Module):
+            super().__init__()
+            def __init__(self, embed_dim, rf_dim=4):
+                self.embed_dim = embed_dim
+                self.rf_dim = rf_dim
+                self.fc = torch.nn.Linear(embed_dim+rf_dim, 1)
+            
+            def forward(self, nf, rf, subj, all_ent):
+                nb_subj = subj.size(0)
+                nb_ent = all_ent.size(0)
+                nf = torch.index_select(nf, 0, subj)
+                x = nf.unsqueeze(1)-all_ent.unsqueeze(0)
+                x = torch.cat([x, rf], dim=-1)
+                x = x.view(-1, self.embed_dim+self.rf_dim)
+                x = self.fc(x)
+                x = torch.sigmoid(x)
+                x = x.view(nb_subj, nb_ent)
+                return x
+
+        class BertPredictor(nn.Module):
+            super().__init__()
+            def __init__(self, num_ent, num_rel, num_base, init_dim, gcn_dim, embed_dim, n_layer, edge_type, edge_norm,
+                 bias=True, gcn_drop=0., opn='mult', hid_drop=0., input_drop=0., conve_hid_drop=0., feat_drop=0.,
+                 num_filt=None, ker_sz=None, k_h=None, k_w=None):
+                self.embed_dim = embed_dim
+                self.k_h = k_h
+                self.k_w = k_w
+
+                self.bn0 = torch.nn.BatchNorm2d(1)
+                self.bn1 = torch.nn.BatchNorm2d(num_filt)
+                self.bn2 = torch.nn.BatchNorm1d(embed_dim)
+                self.bn3 = torch.nn.BatchNorm1d(embed_dim)
+
+                self.drop = torch.nn.Dropout(hid_drop)
+                self.input_drop = torch.nn.Dropout(input_drop)
+                self.feature_drop = torch.nn.Dropout(feat_drop)
+                self.hidden_drop = torch.nn.Dropout(conve_hid_drop)
+
+                self.flat_sz = flat_sz_h * flat_sz_w * num_filt
+
+                self.mlp_bert = torch.nn.Linear(rel_fs, embed_dim)
+                self.conv2d_bert = torch.nn.Conv2d(in_channels=1, out_channels=num_filt,
+                                      kernel_size=(ker_sz, ker_sz), stride=1, padding=0, bias=bias)
+                self.fc_bert = torch.nn.Linear(flat_sz, embed_dim)
+
+                self.bias_bert = nn.Parameter(torch.zeros(num_ent))
+
+            def concat(self, ent_embed, rel_embed):
+                ent_embed = ent_embed.view(-1, 1, self.embed_dim)
+                rel_embed = rel_embed.view(-1, 1, self.embed_dim)
+                stack_input = torch.cat([ent_embed, rel_embed], 1)  # [batch_size, 2, embed_dim]
+                assert self.embed_dim == self.k_h * self.k_w
+                stack_input = stack_input.reshape(-1, 1, 2 * self.k_h, self.k_w)  # reshape to 2D [batch, 1, 2*k_h, k_w]
+                return stack_input
+            
+            def forward(self, nf, rf, subj, all_ent):
+                x = self.mlp_bert(rf)
+                x = self.bn3(x)
+                x = F.relu(x)
+                # x = self.concat(torch.index_select(nf, 0, subj), x)
+                x = self.concat(all_ent, x)
+                x = self.bn0(x)
+                x = self.conv2d_bert(x)
+                x = self.bn1(x)
+                x = F.relu(x)
+                x = self.feature_drop(x)
+                x = x.view(-1, self.flat_sz)
+                x = self.fc_bert(x)
+                x = self.hidden_drop(x)
+                x = self.bn2(x)
+                x = F.relu(x)
+                nf = torch.index_select(nf, 0, subj)
+                x = torch.mm(nf, x.transpose(1, 0))
+                x += self.bias_bert.expand_as(x)
+                bert_score = torch.sigmoid(x)
+                return bert_score
+
+        # self.bert_predictor = BertPredictor(num_ent, num_rel, num_base, init_dim, gcn_dim, embed_dim, n_layer, edge_type, edge_norm,
+        #          bias, gcn_drop, opn, hid_drop, input_drop, conve_hid_drop, feat_drop,
+        #          num_filt, ker_sz, k_h, k_w)
+
+        self.bert_predictor = BertPerdictorDiff(embed_dim)
 
 
     def concat(self, ent_embed, rel_embed):
@@ -323,23 +405,8 @@ class CompGCN_ConvE_W(CompGCN_W):
         x += self.bias.expand_as(x)
         gcn_score = torch.sigmoid(x)
 
-        x = self.mlp_bert(rf)
-        x = self.bn2(rf)
-        x = F.relu(rf)
-        x = self.concat(torch.index_select(nf, 0, subj), x)
-        x = self.bn0(x)
-        x = self.conv2d_bert(x)
-        x = self.bn1(x)
-        x = F.relu(x)
-        x = self.feature_drop(x)
-        x = x.view(-1, self.flat_sz)
-        x = self.fc_bert(x)
-        x = self.hidden_drop(x)
-        x = self.bn2(x)
-        x = F.relu(x)
-        x = torch.mm(x, all_ent.transpose(1, 0))
-        x += self.bias_bert.expand_as(x)
-        bert_score = torch.sigmoid(x)
+        bert_score = self.bert_predictor(nf, rf, subj, all_ent)
+        
         score = gcn_score*self.m + bert_score*(1-self.m)
         return score
 

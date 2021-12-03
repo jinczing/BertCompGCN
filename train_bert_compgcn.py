@@ -19,7 +19,7 @@ from CompGCN.model import CompGCN_ConvE_W
 import csv
 import tqdm
 import ast
-from CompGCN.utils import TrainDataset, TestDataset
+from CompGCN.utils import TrainBinaryDataset, TestBinaryDataset, InferenceDataset, BinarySampler
 from collections import defaultdict as ddict
 from itertools import combinations
 import random
@@ -125,7 +125,9 @@ data_paths = {}
 for path in os.listdir(args.rel_path):
     data_paths[path] = os.path.join(args.rel_path, path)
 
-g, edge_type, edge_weight, edge_norm, features, word_num, doc_num, doc_mask, test_mask = load_multi_relations_corpus(data_paths)
+# todo: need to convert everythings to tensor
+g, edge_type, edge_weight, edge_norm, word_features, word_num, doc_num, doc_mask, test_mask = load_multi_relations_corpus(data_paths)
+g.to(device)
 edge_type = torch.tensor(edge_type).to(device)
 edge_weight = torch.Tensor(edge_weight).to(device)
 edge_norm = torch.Tensor(edge_norm).to(device)
@@ -139,13 +141,15 @@ nb_test
 nb_word = word_num
 
 # instantiate model according to class number
+# todo: pass init word embeddings to model
 model = CompGCN_ConvE_W(num_ent=nb_node, num_rel=nb_edge, num_base=args.num_bases,
                         init_dim=args.init_dim, gcn_dim=args.gcn_dim, embed_dim=args.embed_dim,
                         n_layer=args.gcn_layers, edge_type=edge_type, edge_norm=edge_norm,
                         bias=args.bias, gcn_drop=args.gcn_drop, opn=args.opn,
                         hid_drop=args.hid_drop, input_drop=args.input_drop,
                         conve_hid_drop=args.conve_hid_drop, feat_drop=args.feat_drop,
-                        num_filt=args.num_filt, ker_sz=args.ker_sz, k_h=args.k_h, k_w=args.k_w)
+                        num_filt=args.num_filt, ker_sz=args.ker_sz, k_h=args.k_h, k_w=args.k_w,
+                        word_features=word_features)
 model.to(device)
 
 bert_model = BertModel()
@@ -171,14 +175,15 @@ for a_id, article in enumerate(tqdm.tqdm(all_articles)):
   docs.append(sections)
 
 def encode_input(text, tokenizer):
-    input = tokenizer(text, max_length=max_length, truncation=True, padding='max_length', return_tensors='pt')
-#     print(input.keys())
+    input = 
+    # padding='max_length'
     return input
 
 for i, doc in enumerate(docs):
     for j, sec in enumerate(doc):
-        inputs = encode_input(sec, tokenizer)
-        docs[i][j] = inputs
+        for k , sent in enumerate(sec):
+            inputs = tokenizer(sent, max_length=args.max_length, truncation=True, return_tensors='pt')
+            docs[i][j][k] = inputs
 
 # build triplets
 triplets = {
@@ -198,14 +203,14 @@ val_pos_ids = pos_ids[int(pos_ids.size(0)*args.train_val_ratio):]
 
 s2o_train = ddict(set)
 for id in train_pos_ids:
-    subj, obj = g.edges()[0][id], g.edges()[1][id]
+    subj, obj = g.edges()[0][id]-word_num, g.edges()[1][id]-word_num
     rel = 10
     s2o_train[(subj, rel)].add(obj)
 for (subj, rel), obj in s2o_train.items():
     triplets['train_pos'].append({'triple': (subj, rel, -1), 'label': list(obj)})
 s2o_val = ddict(set)
 for id in val_pos_ids:
-    subj, obj = g.edges()[0][id], g.edges()[1][id]
+    subj, obj = g.edges()[0][id]-word_num, g.edges()[1][id]-word_num
     rel = 10
     s2o_val[(subj, rel)].add(obj)
 for (subj, rel), obj in s2o_val.items():
@@ -214,13 +219,13 @@ for (subj, rel), obj in s2o_val.items():
 # negative train and val
 s2o_all = ddict(set)
 for id in pos_ids:
-    subj, obj = g.edges()[0][id], g.edges()[1][id]
+    subj, obj = g.edges()[0][id]-word_num, g.edges()[1][id]-word_num
     rel = 10
     s2o_all[(subj, rel)].add(obj)
 all_ids = combinations(g.nodes()[doc_mask], 2)
 neg_ids = []
 for i, (subj, obj) in enumerate(all_ids):
-    if len(s2o_all[subj, obj]) == 0:
+    if len(s2o_all[subj, obj]) == 0 and subj!=obj:
         neg_ids.append((subj, obj))
 # permute
 random.shuffle(neg_ids)
@@ -232,119 +237,184 @@ for subj, obj in train_neg_ids:
 for subj, obj in val_neg_ids:
     triplets['val_neg'].append({'triple': (subj, rel, []]), 'label': []})
 
-# test
+# test # todo: correct test indices
 for subj, obj in combinations(g.nodes()[tset_mask], 2):
     triplets['test'].append({'triple': (subj, rel, []), 'label': []})
 
 data_iter = {
             'train': DataLoader(
-                TrainDataset(triplets['train_pos'], triplets['train_neg'], 
-                             nb_node, args),
+                TrainBinaryDataset(triplets['train_pos'], triplets['train_neg'], 
+                             doc_mask.sum(), args),
                 batch_size=args.batch_size,
                 shuffle=True,
-                num_workers=args.num_workers
+                num_workers=args.num_workers,
+                sampler=BinarySampler(len(triplets['train_pos']),
+                                      len(triplets['train_neg']))
             ),
             'val': DataLoader(
-                TestDataset(triplets['val_pos'], triplets['val_neg'], 
-                            nb_node, args),
+                TestBinaryDataset(triplets['val_pos'], triplets['val_neg'], 
+                            doc_mask.sum(), args),
                 batch_size=args.batch_size,
                 shuffle=True,
-                num_workers=args.num_workers
+                num_workers=args.num_workers,
+                sampler=BinarySampler(len(triplets['val_pos']),
+                                      len(triplets['val_neg']))
             ),
-            'test': DataLoader(
-                TestDataset(triplets['test'], test_mask.sum(), args),
-                batch_size=args.batch_size,
-                shuffle=True,
-                num_workers=args.num_workers
-            ),
+            # 'test': DataLoader(
+            #     InferenceDataset(triplets['test'], test_mask.sum(), args),
+            #     batch_size=args.batch_size,
+            #     shuffle=True,
+            #     num_workers=args.num_workers
+            # ),
         }
 
-
-# input_ids = th.cat([input_ids[:-nb_test], th.zeros((nb_word, max_length), dtype=th.long), input_ids[-nb_test:]])
-# attention_mask = th.cat([attention_mask[:-nb_test], th.zeros((nb_word, max_length), dtype=th.long), attention_mask[-nb_test:]])
-
-# document mask used for update feature
-doc_mask  = train_mask + val_mask + test_mask
-
-# build DGL Graph
-adj_norm = normalize_adj(adj + sp.eye(adj.shape[0]))
-g = dgl.from_scipy(adj_norm.astype('float32'), eweight_name='edge_weight')
-g.ndata['input_ids'], g.ndata['attention_mask'] = input_ids, attention_mask
-g.ndata['label'], g.ndata['train'], g.ndata['val'], g.ndata['test'] = \
-    th.LongTensor(y), th.FloatTensor(train_mask), th.FloatTensor(val_mask), th.FloatTensor(test_mask)
-g.ndata['label_train'] = th.LongTensor(y_train)
-g.ndata['cls_feats'] = th.zeros((nb_node, model.feat_dim))
-
-logger.info('graph information:')
-logger.info(str(g))
-
-# create index loader
-train_idx = Data.TensorDataset(th.arange(0, nb_train, dtype=th.long))
-val_idx = Data.TensorDataset(th.arange(nb_train, nb_train + nb_val, dtype=th.long))
-test_idx = Data.TensorDataset(th.arange(nb_node-nb_test, nb_node, dtype=th.long))
-doc_idx = Data.ConcatDataset([train_idx, val_idx, test_idx])
-
-idx_loader_train = Data.DataLoader(train_idx, batch_size=batch_size, shuffle=True)
-idx_loader_val = Data.DataLoader(val_idx, batch_size=batch_size)
-idx_loader_test = Data.DataLoader(test_idx, batch_size=batch_size)
-idx_loader = Data.DataLoader(doc_idx, batch_size=batch_size, shuffle=True)
-
 # Training
+doc_embeds_g = None
 def update_feature():
-    global model, g, doc_mask
-    # no gradient needed, uses a large batchsize to speed up the process
-    dataloader = Data.DataLoader(
-        Data.TensorDataset(g.ndata['input_ids'][doc_mask], g.ndata['attention_mask'][doc_mask]),
-        batch_size=1024
-    )
-    with th.no_grad():
-        model = model.to(gpu)
-        model.eval()
-        cls_list = []
-        for i, batch in enumerate(dataloader):
-            input_ids, attention_mask = [x.to(gpu) for x in batch]
-            output = model.bert_model(input_ids=input_ids, attention_mask=attention_mask)[0][:, 0]
-            cls_list.append(output.cpu())
-        cls_feat = th.cat(cls_list, axis=0)
-    g = g.to(cpu)
-    g.ndata['cls_feats'][doc_mask] = cls_feat
-    return g
+    global model, g, doc_mask, doc_embeds_g
+    with torch.no_grad():
+        doc_embeds = []
+        for doc in docs:
+            doc_embed = None
+            for sec in doc:
+                sec_embed = None
+                for sent in sec:
+                    output = list(
+                        bert_model(
+                            sent.unsqueeze(0),
+                            attention_mask=None,
+                            token_type_ids=None,
+                            position_ids=None,
+                            head_mask=None,
+                            inputs_embeds=None,
+                            output_hidden_states=False,
+                            return_dict=False,
+                        )
+                    )[0].squeeze(0)
+                    if sec_embed is None:
+                        sec_embed = output.mean(0)
+                    else:
+                        sec_embed += output.mean(0)
+                sec_embed /= len(sec)
+                if doc_embed is None:
+                    doc_embed = sec_embed
+                else:
+                    doc_embed += sec_embed
+            doc_embed /= len(doc)
+            doc_embeds.append(doc_embed.unqueeze(0))
+        doc_embeds_g = torch.cat(doc_embeds, dim=0)
 
+gcn_parameters = []
+for child in model.children():
+    if 'BertPredictor' in child.__class__.__name__:
+        continue
+    gcn_parameters.append(list(child.parameters()))
+gcn_parameters = sum(gcn_parameters, [])
 
 optimizer = th.optim.Adam([
-        # {'params': model.bert_model.parameters(), 'lr': bert_lr},
-        {'params': model.classifier.parameters(), 'lr': bert_lr},
-        {'params': model.gcn.parameters(), 'lr': gcn_lr},
+        {'params': bert_model.parameters(), 'lr': bert_lr},
+        {'params': model.bert_predictor.parameters(), 'lr': bert_lr},
+        {'params': gcn_parameters, 'lr': gcn_lr},
     ], lr=1e-3
 )
 scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[30], gamma=0.1)
 
+class F1_Loss(nn.Module):
+    '''Calculate F1 score. Can work with gpu tensors
+    
+    The original implmentation is written by Michal Haltuf on Kaggle.
+    
+    Returns
+    -------
+    torch.Tensor
+        `ndim` == 1. epsilon <= val <= 1
+    
+    Reference
+    ---------
+    - https://www.kaggle.com/rejpalcz/best-loss-function-for-f1-score-metric
+    - https://scikit-learn.org/stable/modules/generated/sklearn.metrics.f1_score.html#sklearn.metrics.f1_score
+    - https://discuss.pytorch.org/t/calculating-precision-recall-and-f1-score-in-case-of-multi-label-classification/28265/6
+    - http://www.ryanzhang.info/python/writing-your-own-loss-function-module-for-pytorch/
+    '''
+    def __init__(self, epsilon=1e-7):
+        super().__init__()
+        self.epsilon = epsilon
+        
+    def forward(self, y_pred, y_true,):
+        assert y_pred.ndim == 2
+        assert y_true.ndim == 1
+        y_true = F.one_hot(y_true, 2).to(torch.float32)
+        y_pred = F.softmax(y_pred, dim=1)
+        
+        tp = (y_true * y_pred).sum(dim=0).to(torch.float32)
+        tn = ((1 - y_true) * (1 - y_pred)).sum(dim=0).to(torch.float32)
+        fp = ((1 - y_true) * y_pred).sum(dim=0).to(torch.float32)
+        fn = (y_true * (1 - y_pred)).sum(dim=0).to(torch.float32)
+
+        precision = tp / (tp + fp + self.epsilon)
+        recall = tp / (tp + fn + self.epsilon)
+
+        f1 = 2* (precision*recall) / (precision + recall + self.epsilon)
+        f1 = f1.clamp(min=self.epsilon, max=1-self.epsilon)
+        return 1 - f1.mean()
+
+f1_loss = F1_Loss().to(device)
+
+def compute_doc_embeds(subj, docs, nf):
+    for s in subj:
+        doc_embed = None
+        for sec in docs[s]:
+            sec_embed = None
+            for sent in sec:
+                output = list(
+                        bert_model(
+                            sent.unsqueeze(0),
+                            attention_mask=None,
+                            token_type_ids=None,
+                            position_ids=None,
+                            head_mask=None,
+                            inputs_embeds=None,
+                            output_hidden_states=False,
+                            return_dict=False,
+                        )
+                    )[0].squeeze(0)
+                if sec_embed is None:
+                    sec_embed = output.mean(0)
+                else:
+                    sec_embed = sec_embed + output.mean(0)
+            sec_embed = sec_embed/len(sent)
+            if doc_embed is None:
+                doc_embed = sec_embed
+            else:
+                doc_embed = doc_embed + sec_embed
+        doc_embed = doc_embed/len(sec)
+        nf[s] = doc_embed
+    return nf
 
 def train_step(engine, batch):
-    global model, g, optimizer
+    global bert_model, g, optimizer, docs, doc_embeds_g, rfs,
     model.train()
-    model = model.to(gpu)
-    g = g.to(gpu)
+
+    step, (triplets, labels) = batch
+    triplets, labels = triplets.to(device), labels.to(device)
+    subj, rel = triplets[:, 0], triplets[:, 1]
+
+    # todo: inference embeddings of subj
+    nf = doc_embeds_g.clone()
+    nf = compute_doc_embeds(subj, docs, nf)
+
+    # todo: extract rf
+    rf = rfs[subj, ...] # [subj, num_ent, 4]
+
+    preds = model(nf, g, subj, rel, rf)  # [batch_size, num_ent]
+    loss = model.calc_loss(preds, labels)
     optimizer.zero_grad()
-    (idx, ) = [x.to(gpu) for x in batch]
-    optimizer.zero_grad()
-    train_mask = g.ndata['train'][idx].type(th.BoolTensor)
-    y_pred = model(g, idx)[train_mask]
-    y_true = g.ndata['label_train'][idx][train_mask]
-    loss = F.nll_loss(y_pred, y_true)
     loss.backward()
     optimizer.step()
-    g.ndata['cls_feats'].detach_()
-    train_loss = loss.item()
-    with th.no_grad():
-        if train_mask.sum() > 0:
-            y_true = y_true.detach().cpu()
-            y_pred = y_pred.argmax(axis=1).detach().cpu()
-            train_acc = accuracy_score(y_true, y_pred)
-        else:
-            train_acc = 1
-    return train_loss, train_acc
 
+    f1_score = f1_loss(preds, labels)
+
+    return loss, f1_score
 
 trainer = Engine(train_step)
 
@@ -355,23 +425,28 @@ def reset_graph(trainer):
     update_feature()
     th.cuda.empty_cache()
 
-
 def test_step(engine, batch):
-    global model, g
+    global bert_model, g, doc_embeds_g, rfs
     with th.no_grad():
         model.eval()
-        model = model.to(gpu)
-        g = g.to(gpu)
-        (idx, ) = [x.to(gpu) for x in batch]
-        y_pred = model(g, idx)
-        y_true = g.ndata['label'][idx]
-        return y_pred, y_true
+
+        step, (triplets, labels) = batch
+        triplets, labels = triplets.to(device), labels.to(device)
+        subj, rel = triplets[:, 0], triplets[:, 1]
+        nf = doc_embeds_g.clone()
+        rf = rfs[subj, ...]
+        preds = model(nf, g, subj, rel, rf)  # [batch_size, num_ent]
+        
+        return preds.flatten(), labels.flatten()
 
 
 evaluator = Engine(test_step)
+precision = Precision(average=False)
+recall = Recall(average=False)
 metrics={
-    'acc': Accuracy(),
-    'nll': Loss(th.nn.NLLLoss())
+    'precision': precision,
+    'recall': recall,
+    'f1': (precision * recall * 2 / (precision + recall)).mean()
 }
 for n, f in metrics.items():
     f.attach(evaluator, n)
@@ -379,36 +454,40 @@ for n, f in metrics.items():
 
 @trainer.on(Events.EPOCH_COMPLETED)
 def log_training_results(trainer):
-    evaluator.run(idx_loader_train)
+    
+    train_iter = data_iter['train']
+    evaluator.run(train_iter)
     metrics = evaluator.state.metrics
-    train_acc, train_nll = metrics["acc"], metrics["nll"]
-    evaluator.run(idx_loader_val)
+    train_precision, train_recall, train_f1 = metrics["precision"], metrics["recall"], metrics["f1"]
+
+    val_iter = data_iter['val']
+    evaluator.run(val_iter)
     metrics = evaluator.state.metrics
-    val_acc, val_nll = metrics["acc"], metrics["nll"]
-    evaluator.run(idx_loader_test)
-    metrics = evaluator.state.metrics
-    test_acc, test_nll = metrics["acc"], metrics["nll"]
+    val_precision, val_recall, val_f1 = metrics["precision"], metrics["recall"], metrics["f1"]
+
     logger.info(
-        "Epoch: {}  Train acc: {:.4f} loss: {:.4f}  Val acc: {:.4f} loss: {:.4f}  Test acc: {:.4f} loss: {:.4f}"
-        .format(trainer.state.epoch, train_acc, train_nll, val_acc, val_nll, test_acc, test_nll)
+        "Epoch: {}  Train pre: {:.4f} re: {:.4f} f1: {:.4f}  Val pre: {:.4f} re: {:.4f} f1: {:.4f}"
+        .format(trainer.state.epoch, train_precision, train_recall, train_f1,
+                                     val_precision, val_recall, val_f1)
     )
-    if val_acc > log_training_results.best_val_acc:
+    if val_f1 > log_training_results.best_val_f1:
         logger.info("New checkpoint")
         th.save(
             {
-                'bert_model': model.bert_model.state_dict(),
-                'classifier': model.classifier.state_dict(),
-                'gcn': model.gcn.state_dict(),
+                'bert_model': bert_model.state_dict(),
+                'model': model.state_dict(),
                 'optimizer': optimizer.state_dict(),
                 'epoch': trainer.state.epoch,
             },
             os.path.join(
-                ckpt_dir, 'checkpoint.pth'
+                args.ckpt_dir, 'checkpoint.pth'
             )
         )
-        log_training_results.best_val_acc = val_acc
+        log_training_results.best_val_f1 = val_f1
 
 
-log_training_results.best_val_acc = 0
-g = update_feature()
-trainer.run(idx_loader, max_epochs=nb_epochs)
+log_training_results.best_val_f1 = 0
+update_feature()
+
+train_iter = data_iter['train']
+trainer.run(train_iter, max_epochs=args.nb_epochs)

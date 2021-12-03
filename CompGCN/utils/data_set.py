@@ -1,7 +1,7 @@
 from torch.utils.data import Dataset
 import numpy as np
 import torch
-
+from torch.utils.data.sampler import Sampler
 
 class TrainDataset(Dataset):
     def __init__(self, triplets, num_ent, params):
@@ -15,6 +15,7 @@ class TrainDataset(Dataset):
         return len(self.triplets)
 
     def __getitem__(self, item):
+        np.random.randint(2)
         ele = self.triplets[item]
         triple, label = torch.tensor(ele['triple'], dtype=torch.long), np.int32(ele['label'])
         label = self.get_label(label)
@@ -33,10 +34,12 @@ class TrainDataset(Dataset):
         return torch.tensor(y, dtype=torch.float32)
 
 class TrainBinaryDataset(Dataset):
-    def __init__(self, triplets, num_ent, params):
+    def __init__(self, pos_triplets, neg_triplets, num_ent, params):
         super(TrainDataset, self).__init__()
         self.p = params
-        self.triplets = triplets
+        self.pos_triplets = pos_triplets
+        self.neg_triplets = net_triplets
+        self.triplets = self.pos_triplets+self.neg_triplets
         self.label_smooth = params.lbl_smooth
         self.num_ent = num_ent
 
@@ -61,6 +64,26 @@ class TrainBinaryDataset(Dataset):
         y[label] = 1
         return torch.tensor(y, dtype=torch.float32)
 
+class BinarySampler(Sampler):
+
+    def __init__(self, pos_num, neg_num, length_before_new_iter=100000):
+        super().__init__()
+        self.pos_num = pos_num
+        self.neg_num = neg_num
+        self.length_before_new_iter = length_before_new_iter
+
+    def __len__(self):
+        return self.length_before_new_iter
+
+    def __iter__(self):
+        l = []
+        for i in range(self.length_before_new_iter):
+            ran = np.random.randint(2)
+            if ran:
+                l.append(np.random.randint(self.pos_num))
+            else:
+                l.append(self.pos_num+np.random.randint(self.neg_num))
+        return iter(l)
 
 class TestDataset(Dataset):
     def __init__(self, triplets, num_ent, params):
@@ -88,9 +111,11 @@ class TestDataset(Dataset):
         return torch.tensor(y, dtype=torch.float32)
 
 class TestBinaryDataset(Dataset):
-    def __init__(self, triplets, num_ent, params):
+    def __init__(self, pos_triplets, neg_triplets, num_ent, params):
         super(TestDataset, self).__init__()
-        self.triplets = triplets
+        self.pos_triplets = pos_triplets
+        self.neg_triplets = neg_triplets
+        self.triplets = self.pos_triplets + self.neg_triplets
         self.num_ent = num_ent
 
     def __len__(self):

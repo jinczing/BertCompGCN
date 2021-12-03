@@ -145,7 +145,7 @@ def load_multi_relations_corpus(data_paths):
     '''
     data_dict = {}
     g = dgl.DGLGraph()
-    features = []
+    word_features = []
     edge_type = []
     edge_weight = []
 
@@ -187,17 +187,20 @@ def load_multi_relations_corpus(data_paths):
     doc_num = key_inclusions.shape[0]
 
     g.add_nodes(key_num+ne_num+ws_num+doc_num)
+    doc_mask = [False]*(key_num+ne_num+ws_num) + [True]*doc_num
+    test_num = 421
+    test_mask = [False]*(g.num_nodes()-test_num) + [True]*test_num
 
     # word features
     with open(data_paths['key_berts'], 'rb') as f:
         key_berts = pkl.load(f)
-        features.append(key_berts)
+        word_features.append(key_berts)
     with open(data_paths['ne_berts'], 'rb') as f:
         ne_berts = pkl.load(f)
-        features.append(ne_berts)
+        word_features.append(ne_berts)
     with open(data_paths['ws_berts']) as f:
         ws_berts = pkl.load(f)
-        features.append(ws_berts)
+        word_features.append(ws_berts)
 
     # word to word 
     # data_dict[('key', 'pim', 'key')] = []
@@ -251,17 +254,19 @@ def load_multi_relations_corpus(data_paths):
         edge_weight.append(ws_sims[i][j])
 
     # docs features
-    for i, bert_feature in enumerate(bert_features):
-        f = None
-        for j in range(len(bert_feature[0])):
-            if f is None:
-                f = bert_feature[0][j].mean(axis=0)
-            else:
-                f += bert_feature[0][j].mean(axis=0)
-        f /= len(bert_feature[0])
-        features.append(f.expand_dims=(axis=0))
+    # for i, bert_feature in enumerate(bert_features):
+    #     f = None
+    #     for j in range(len(bert_feature[0])):
+    #         if f is None:
+    #             f = bert_feature[0][j].mean(axis=0)
+    #         else:
+    #             f += bert_feature[0][j].mean(axis=0)
+    #     f /= len(bert_feature[0])
+    #     features.append(f.expand_dims=(axis=0))
 
     # doc to doc relations
+    rfs = np.zeros((doc_num, doc_num, 4))
+
     cum += ws_num
     # data_dict[('doc', 'sim', 'doc')] = []
     for i, bert_similarity in enumerate(bert_similarities):
@@ -270,6 +275,7 @@ def load_multi_relations_corpus(data_paths):
             g.add_edges(i+cum, bert_similarity[2][id]+cum)
             edge_type.append(6)
             edge_weight.append(bert_similarity[3][i][j])
+            rfs[i, bert_similarity[2][id], 0] = bert_similarity[3][i][j]
 
     # data_dict[('doc', 'key_inclusion', 'doc')] = []
     ids = np.where(key_inclusions>0.5)
@@ -278,6 +284,7 @@ def load_multi_relations_corpus(data_paths):
         g.add_edges(i+cum, j+cum)
         edge_type.append(7)
         edge_weight.append(key_inclusions[i][j])
+        rfs[i, j, 1] = key_inclusions[i][j]
 
     # data_dict[('doc', 'ne_inclusion', 'doc')] = []
     ids = np.where(ne_inclusions>0.5)
@@ -286,6 +293,7 @@ def load_multi_relations_corpus(data_paths):
         g.add_edges(i+cum, j+cum)
         edge_type.append(8)
         edge_weight.append(ne_inclusions[i][j])
+        rfs[i, j, 2] = ne_inclusions[i][j]
 
     # data_dict[('doc', 'ws_inclusion', 'doc')] = []
     ids = np.where(ws_inclusions>0.5)
@@ -294,6 +302,7 @@ def load_multi_relations_corpus(data_paths):
         g.add_edges(i+cum, j+cum)
         edge_type.append(9)
         edge_weight.append(ws_inclusions[i][j])
+        rfs[i, j, 3] = ws_inclusions[i][j]
 
     # data_dict[('doc', 'gt', 'doc')] = []
     for match in matching_table:
@@ -341,7 +350,7 @@ def load_multi_relations_corpus(data_paths):
 
     cum += doc_num
     g.add_edges(g.edges()[1], g.edges()[0])
-    features = np.concatenate(features, axis=0)
+    word_features = np.concatenate(features, axis=0)
     edge_type += list(map(lambda x:x+cum, edge_type))
     edge_weight *= 2
 
@@ -352,7 +361,7 @@ def load_multi_relations_corpus(data_paths):
     g.apply_edges(lambda edges: {'xxx': edges.dst['xxx'] * edges.src['xxx']})
     norm = self.g.edata.pop('xxx').squeeze()
 
-    return g, edge_type, edge_weight, norm, features, key_num+ne_num+ws_Num, doc_num
+    return g, edge_type, edge_weight, norm, word_features, key_num+ne_num+ws_Num, doc_num, doc_mask, test_mask, rfs, 
     # return adj, features, y_train, y_val, y_test, train_mask, val_mask, test_mask, train_size, test_size
 
 def load_corpus(dataset_str):
