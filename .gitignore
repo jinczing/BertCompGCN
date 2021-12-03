@@ -17,3 +17,4 @@ checkpoint/*
 bert_gcn
 bert_gcn_ind
 bert_sgc
+rel/*

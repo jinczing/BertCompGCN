@@ -163,7 +163,7 @@ def load_multi_relations_corpus(data_paths):
         ws_sims = pkl.load(f)
 
     bert_similarities = torch.load(data_paths['bert_similarities'])
-    bert_features = torch.load(data_paths['bert_features'])
+    # bert_features = torch.load(data_paths['bert_features'])
 
     with open(data_paths['key_inclusions'], 'rb') as f:
         key_inclusions = pkl.load(f)
@@ -361,7 +361,7 @@ def load_multi_relations_corpus(data_paths):
     g.apply_edges(lambda edges: {'xxx': edges.dst['xxx'] * edges.src['xxx']})
     norm = self.g.edata.pop('xxx').squeeze()
 
-    return g, edge_type, edge_weight, norm, word_features, key_num+ne_num+ws_Num, doc_num, doc_mask, test_mask, rfs, 
+    return g, edge_type, edge_weight, norm, word_features, key_num+ne_num+ws_num, doc_num, doc_mask, test_mask, rfs, 
     # return adj, features, y_train, y_val, y_test, train_mask, val_mask, test_mask, train_size, test_size
 
 def load_corpus(dataset_str):

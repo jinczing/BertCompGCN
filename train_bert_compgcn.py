@@ -23,9 +23,11 @@ from CompGCN.utils import TrainBinaryDataset, TestBinaryDataset, InferenceDatase
 from collections import defaultdict as ddict
 from itertools import combinations
 import random
+from transformers.models.bert.modeling_bert import BertModel
+from transformers import BertTokenizer, BertConfig
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--max_length', type=int, default=128, help='the input length for bert')
+parser.add_argument('--max_length', type=int, default=512, help='the input length for bert')
 parser.add_argument('--batch_size', type=int, default=64)
 parser.add_argument('-m', '--m', type=float, default=0.7, help='the factor balancing BERT and GCN prediction')
 parser.add_argument('--nb_epochs', type=int, default=50)
@@ -53,7 +55,7 @@ parser.add_argument('--num_bases', dest='num_bases', default=-1, type=int,
 parser.add_argument('--init_dim', dest='init_dim', default=100, type=int,
                     help='Initial dimension size for entities and relations')
 parser.add_argument('--gcn_dim', dest='gcn_dim', default=200, type=int, help='Number of hidden units in GCN')
-parser.add_argument('--embed_dim', dest='embed_dim', default=None, type=int,
+parser.add_argument('--embed_dim', dest='embed_dim', default=200, type=int,
                     help='Embedding dimension to give as input to score function')
 parser.add_argument('--gcn_drop', dest='gcn_drop', default=0.5, type=float, help='Dropout to use in GCN Layer')
 parser.add_argument('--hid_drop', dest='hid_drop', default=0.3, type=float, help='Dropout after GCN')
@@ -111,37 +113,41 @@ device = gpu
 logger.info('arguments:')
 logger.info(str(args))
 logger.info('checkpoints will be saved in {}'.format(ckpt_dir))
-# Model
 
 
 # Data Preprocess
-paths = [
-    'key_pims','key_sims','ne_pims','ne_sims','ws_pims','ws_sims',
-'bert_similarities','bert_features','key_inclusions','ne_inclusions',
-'ws_inclusions','matching_table','key_tf_idfs','ne_tf_idfs','ws_tf_idfs',
-'key_berts','ne_berts','ws_berts'
-]
 data_paths = {}
-for path in os.listdir(args.rel_path):
-    data_paths[path] = os.path.join(args.rel_path, path)
+for path in os.listdir(args.rel_dir):
+    if os.path.isfile(os.path.join(args.rel_dir, path)):
+        data_paths[os.path.basename(path).split('.')[0]] = os.path.join(args.rel_dir, path)
 
-# todo: need to convert everythings to tensor
-g, edge_type, edge_weight, edge_norm, word_features, word_num, doc_num, doc_mask, test_mask = load_multi_relations_corpus(data_paths)
+g, edge_type, edge_weight, edge_norm, word_features, word_num, doc_num, doc_mask, test_mask, rfs = load_multi_relations_corpus(data_paths)
 g.to(device)
 edge_type = torch.tensor(edge_type).to(device)
 edge_weight = torch.Tensor(edge_weight).to(device)
-edge_norm = torch.Tensor(edge_norm).to(device)
+edge_norm = torch.from_numpy(edge_norm).to(device)
+word_features = torch.from_numpy(word_features).to(device)
+doc_mask = torch.tensor(doc_mask).bool().to(device)
+test_mask = torch.tensor(test_mask).bool().to(device)
+rfs = torch.from_numpy(rfs).to(device)
 
 
-# compute number of real train/val/test/word nodes and number of classes
+
+
 nb_node = g.num_nodes()
 nb_edge = len(edge_type)
-nb_train, nb_val = doc_num*args.train_val_ratio, doc_num*(1-args.train_val_ratio)
-nb_test
-nb_word = word_num
+
+config = BertConfig.from_pretrained("hfl/chinese-macbert-base")
+tokenizer = BertTokenizer.from_pretrained("hfl/chinese-macbert-base")
+bert_model = BertModel(config)
+bert_model.to(device)
+if pretrained_bert_ckpt is not None:
+    ckpt = torch.load(args.pretrained_bert_ckpt, map_location=device)['state_dict']
+    bert_state_dict = {k.replace('model.macbert.', ''):v for k, v in s.items() if 'model.macbert' in k}
+    bert_model.load_state_dict(bert_state_dict)
+args.init_dim = list(bert_model.modules())[-2].out_features # todo: setup init_dim
 
 # instantiate model according to class number
-# todo: pass init word embeddings to model
 model = CompGCN_ConvE_W(num_ent=nb_node, num_rel=nb_edge, num_base=args.num_bases,
                         init_dim=args.init_dim, gcn_dim=args.gcn_dim, embed_dim=args.embed_dim,
                         n_layer=args.gcn_layers, edge_type=edge_type, edge_norm=edge_norm,
@@ -152,11 +158,7 @@ model = CompGCN_ConvE_W(num_ent=nb_node, num_rel=nb_edge, num_base=args.num_base
                         word_features=word_features)
 model.to(device)
 
-bert_model = BertModel()
-bert_model.to(device)
-if pretrained_bert_ckpt is not None:
-    ckpt = th.load(pretrained_bert_ckpt, map_location=device)
-    bert_model.load_state_dict(ckpt['bert_model'])
+
 
 
 # load documents and compute input encodings
@@ -173,11 +175,6 @@ for a_id, article in enumerate(tqdm.tqdm(all_articles)):
   for i in range(len(sections)):
     sections[i] = sections[i].split('。')
   docs.append(sections)
-
-def encode_input(text, tokenizer):
-    input = 
-    # padding='max_length'
-    return input
 
 for i, doc in enumerate(docs):
     for j, sec in enumerate(doc):
@@ -238,7 +235,7 @@ for subj, obj in val_neg_ids:
     triplets['val_neg'].append({'triple': (subj, rel, []]), 'label': []})
 
 # test # todo: correct test indices
-for subj, obj in combinations(g.nodes()[tset_mask], 2):
+for subj, obj in combinations(g.nodes()[test_mask], 2):
     triplets['test'].append({'triple': (subj, rel, []), 'label': []})
 
 data_iter = {

@@ -121,10 +121,10 @@ class CompGCN_W(nn.Module):
         x = drop1(x)  # embeddings of entities [num_ent, dim]
         x, r = self.conv2(g, x, r, self.edge_type, self.edge_norm, self.edge_weight) if self.n_layer == 2 else (x, r)
         x = drop2(x) if self.n_layer == 2 else x
-        sub_emb = torch.index_select(x, 0, word_num+subj)  # filter out embeddings of subjects in this batch
+        sub_emb = torch.index_select(x, 0, self.word_num+subj)  # filter out embeddings of subjects in this batch
         rel_emb = torch.index_select(r, 0, rel)  # filter out embeddings of relations in this batch
 
-        return sub_emb, rel_emb, x
+        return sub_emb, rel_emb, x[self.word_num:]
 
 
 class CompGCN_DistMult(CompGCN):
@@ -292,7 +292,8 @@ class CompGCN_ConvE_W(CompGCN_W):
                 self.rf_dim = rf_dim
                 self.fc = torch.nn.Linear(embed_dim+rf_dim, 1)
             
-            def forward(self, nf, rf, subj, all_ent):
+            def forward(self, nf, rf, subj):
+                all_ent = nf
                 nb_subj = subj.size(0)
                 nb_ent = all_ent.size(0)
                 nf = torch.index_select(nf, 0, subj)
@@ -366,7 +367,7 @@ class CompGCN_ConvE_W(CompGCN_W):
         #          bias, gcn_drop, opn, hid_drop, input_drop, conve_hid_drop, feat_drop,
         #          num_filt, ker_sz, k_h, k_w)
 
-        self.bert_predictor = BertPerdictorDiff(embed_dim)
+        self.bert_predictor = BertPerdictorDiff(self.init_dim)
 
 
     def concat(self, ent_embed, rel_embed):
@@ -405,7 +406,7 @@ class CompGCN_ConvE_W(CompGCN_W):
         x += self.bias.expand_as(x)
         gcn_score = torch.sigmoid(x)
 
-        bert_score = self.bert_predictor(nf, rf, subj, all_ent)
+        bert_score = self.bert_predictor(nf, rf, subj)
         
         score = gcn_score*self.m + bert_score*(1-self.m)
         return score
