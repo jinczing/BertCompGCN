@@ -35,10 +35,10 @@ class TrainDataset(Dataset):
 
 class TrainBinaryDataset(Dataset):
     def __init__(self, pos_triplets, neg_triplets, num_ent, params):
-        super(TrainDataset, self).__init__()
+        super(TrainBinaryDataset, self).__init__()
         self.p = params
         self.pos_triplets = pos_triplets
-        self.neg_triplets = net_triplets
+        self.neg_triplets = neg_triplets
         self.triplets = self.pos_triplets+self.neg_triplets
         self.label_smooth = params.lbl_smooth
         self.num_ent = num_ent
@@ -67,7 +67,7 @@ class TrainBinaryDataset(Dataset):
 class BinarySampler(Sampler):
 
     def __init__(self, pos_num, neg_num, length_before_new_iter=100000):
-        super().__init__()
+        super(BinarySampler, self).__init__([])
         self.pos_num = pos_num
         self.neg_num = neg_num
         self.length_before_new_iter = length_before_new_iter
@@ -112,7 +112,7 @@ class TestDataset(Dataset):
 
 class TestBinaryDataset(Dataset):
     def __init__(self, pos_triplets, neg_triplets, num_ent, params):
-        super(TestDataset, self).__init__()
+        super(TestBinaryDataset, self).__init__()
         self.pos_triplets = pos_triplets
         self.neg_triplets = neg_triplets
         self.triplets = self.pos_triplets + self.neg_triplets

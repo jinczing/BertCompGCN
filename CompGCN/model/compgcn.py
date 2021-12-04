@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 import dgl
-from model.layer import CompGCNCov
+from CompGCN.model.layer import CompGCNCov
 import torch.nn.functional as F
 
 
@@ -65,7 +65,7 @@ class CompGCN(nn.Module):
 
 class CompGCN_W(nn.Module):
     def __init__(self, num_ent, num_rel, num_base, init_dim, gcn_dim, embed_dim, n_layer, edge_type, edge_norm, 
-                 edge_weight, conv_bias=True, gcn_drop=0., opn='mult', word_features=None):
+                 edge_weight, conv_bias=True, gcn_drop=0., opn='mult', word_features=None, m=None):
         super(CompGCN_W, self).__init__()
         self.act = torch.tanh
         self.loss = nn.BCELoss()
@@ -93,6 +93,7 @@ class CompGCN_W(nn.Module):
                                 opn) if n_layer == 2 else None
         self.bias = nn.Parameter(torch.zeros(self.num_ent))
 
+        self.m = m
         self.word_features = word_features
         self.word_num = word_features.size(0)
 
@@ -235,9 +236,9 @@ class CompGCN_ConvE(CompGCN):
         return score
 
 class CompGCN_ConvE_W(CompGCN_W):
-    def __init__(self, num_ent, num_rel, num_base, init_dim, gcn_dim, embed_dim, n_layer, edge_type, edge_norm,
+    def __init__(self, num_ent, num_rel, num_base, init_dim, gcn_dim, embed_dim, n_layer, edge_type, edge_norm, edge_weight,
                  bias=True, gcn_drop=0., opn='mult', hid_drop=0., input_drop=0., conve_hid_drop=0., feat_drop=0.,
-                 num_filt=None, ker_sz=None, k_h=None, k_w=None, word_features=None):
+                 num_filt=None, ker_sz=None, k_h=None, k_w=None, word_features=None, m=None):
         """
         :param num_ent: number of entities
         :param num_rel: number of different relations
@@ -260,7 +261,7 @@ class CompGCN_ConvE_W(CompGCN_W):
         :param k_w: width of 2D reshape
         """
         super(CompGCN_ConvE_W, self).__init__(num_ent, num_rel, num_base, init_dim, gcn_dim, embed_dim, n_layer,
-                                            edge_type, edge_norm, bias, gcn_drop, opn, m=0.7, word_features=word_features)
+                                            edge_type, edge_norm, edge_weight, bias, gcn_drop, opn, word_features=word_features, m=0.7)
         self.hid_drop, self.input_drop, self.conve_hid_drop, self.feat_drop = hid_drop, input_drop, conve_hid_drop, feat_drop
         self.num_filt = num_filt
         self.ker_sz, self.k_w, self.k_h = ker_sz, k_w, k_h
@@ -286,8 +287,8 @@ class CompGCN_ConvE_W(CompGCN_W):
         self.m = m
 
         class BertPredictorDiff(nn.Module):
-            super().__init__()
             def __init__(self, embed_dim, rf_dim=4):
+                super().__init__()
                 self.embed_dim = embed_dim
                 self.rf_dim = rf_dim
                 self.fc = torch.nn.Linear(embed_dim+rf_dim, 1)
@@ -306,10 +307,10 @@ class CompGCN_ConvE_W(CompGCN_W):
                 return x
 
         class BertPredictor(nn.Module):
-            super().__init__()
             def __init__(self, num_ent, num_rel, num_base, init_dim, gcn_dim, embed_dim, n_layer, edge_type, edge_norm,
                  bias=True, gcn_drop=0., opn='mult', hid_drop=0., input_drop=0., conve_hid_drop=0., feat_drop=0.,
                  num_filt=None, ker_sz=None, k_h=None, k_w=None):
+                super().__init__()
                 self.embed_dim = embed_dim
                 self.k_h = k_h
                 self.k_w = k_w
@@ -367,7 +368,7 @@ class CompGCN_ConvE_W(CompGCN_W):
         #          bias, gcn_drop, opn, hid_drop, input_drop, conve_hid_drop, feat_drop,
         #          num_filt, ker_sz, k_h, k_w)
 
-        self.bert_predictor = BertPerdictorDiff(self.init_dim)
+        self.bert_predictor = BertPredictorDiff(self.init_dim)
 
 
     def concat(self, ent_embed, rel_embed):

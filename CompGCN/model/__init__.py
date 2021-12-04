@@ -1,1 +1,1 @@
-from .compgcn import CompGCN_DistMult, CompGCN_ConvE
+from .compgcn import CompGCN_DistMult, CompGCN_ConvE, CompGCN_ConvE_W

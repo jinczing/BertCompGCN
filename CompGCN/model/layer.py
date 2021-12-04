@@ -36,7 +36,7 @@ class CompGCNCov(nn.Module):
         nn.init.xavier_normal_(param, gain=nn.init.calculate_gain('relu'))
         return param
 
-    def message_func(self, edges: dgl.EdgeBatch):
+    def message_func(self, edges: dgl.udf.EdgeBatch):
         edge_type = edges.data['type']  # [E, 1]
         edge_weight = edges.data['weight'] # [E, 1]
         edge_num = edge_type.shape[0]
@@ -52,7 +52,7 @@ class CompGCNCov(nn.Module):
         # [E, D] * [E, 1] * [E, 1]
         return {'msg': msg}
 
-    def reduce_func(self, nodes: dgl.NodeBatch):
+    def reduce_func(self, nodes: dgl.udf.NodeBatch):
         return {'h': self.drop(nodes.data['h']) / 3}
 
     def comp(self, h, edge_data):

@@ -7,6 +7,7 @@ import sys
 import re
 import csv
 import dgl
+import torch
 
 
 def parse_index_file(filename):
@@ -116,7 +117,7 @@ def load_data(dataset_str):
 
     return adj, features, y_train, y_val, y_test, train_mask, val_mask, test_mask
 
-def load_multi_relations_corpus(data_paths):
+def load_multi_relations_corpus(data_paths, logger):
     '''
     word2word:
         * keywords
@@ -161,8 +162,16 @@ def load_multi_relations_corpus(data_paths):
         ws_pims = pkl.load(f)
     with open(data_paths['ws_sims'], 'rb') as f:
         ws_sims = pkl.load(f)
+    logger.info(f'key pim {key_pims.shape}')
+    logger.info(f'ne pim {ne_pims.shape}')
+    logger.info(f'ws pim {ws_pims.shape}')
+    logger.info(f'key sim {key_sims.shape}')
+    logger.info(f'ne sim {ne_sims.shape}')
+    logger.info(f'ws sim {ws_sims.shape}')
+    
 
     bert_similarities = torch.load(data_paths['bert_similarities'])
+    logger.info(f'bert sim {len(bert_similarities)}')
     # bert_features = torch.load(data_paths['bert_features'])
 
     with open(data_paths['key_inclusions'], 'rb') as f:
@@ -171,6 +180,9 @@ def load_multi_relations_corpus(data_paths):
         ne_inclusions = pkl.load(f)
     with open(data_paths['ws_inclusions'], 'rb') as f:
         ws_inclusions = pkl.load(f)
+    logger.info(f'key inclusion {key_inclusions.shape}')
+    logger.info(f'ne inclusion {ne_inclusions.shape}')
+    logger.info(f'ws inclusion {ws_inclusions.shape}')
     with open(data_paths['matching_table']) as f:
         matching_table = list(csv.reader(f))[1:]
 
@@ -178,12 +190,16 @@ def load_multi_relations_corpus(data_paths):
         key_tf_idfs = pkl.load(f)
     with open(data_paths['ne_tf_idfs'], 'rb') as f:
         ne_tf_idfs = pkl.load(f)
-    with open(data_paths['ws_tf_idfs']) as f:
+    with open(data_paths['ws_tf_idfs'], 'rb') as f:
         ws_tf_idfs = pkl.load(f)
+    logger.info(f'key tf idf {key_tf_idfs.shape}')
+    logger.info(f'ne tf idf {ne_tf_idfs.shape}')
+    logger.info(f'ws tf idf {ws_tf_idfs.shape}')
+
 
     key_num = key_pims.shape[0]
     ne_num = ne_pims.shape[0]
-    ws_num = ws_pims.shape[0]
+    ws_num = 0 # ws_pims.shape[0]
     doc_num = key_inclusions.shape[0]
 
     g.add_nodes(key_num+ne_num+ws_num+doc_num)
@@ -198,71 +214,74 @@ def load_multi_relations_corpus(data_paths):
     with open(data_paths['ne_berts'], 'rb') as f:
         ne_berts = pkl.load(f)
         word_features.append(ne_berts)
-    with open(data_paths['ws_berts']) as f:
+    with open(data_paths['ws_berts'], 'rb') as f:
         ws_berts = pkl.load(f)
         word_features.append(ws_berts)
 
+    logger.info('info loaded data')
+
     # word to word 
     # data_dict[('key', 'pim', 'key')] = []
-    ids = np.where(key_pims.cpu().numpy()>0.5)
+    ids = np.where(key_pims>0.5)
+    logger.info(f'info word to word key len {ids[0].shape[0]}')
     for i, j in zip(ids[0], ids[1]):
         if i == j: continue
-        g.add_edges(i, j)
         edge_type.append(0)
         edge_weight.append(key_pims[i][j])
+    g.add_edges(ids[0], ids[1])
 
     # data_dict[('key', 'sim', 'key')] = []
-    key_sims = np.where(key_sims.cpu().numpy()>0.5)
-    for i, j in zip(key_sims[0], key_sims[1]):
+    ids = np.where(key_sims>0.5)
+    for i, j in zip(ids[0], ids[1]):
         if i == j: continue
-        g.add_edges(i, j)
         edge_type.append(1)
         edge_weight.append(key_sims[i][j])
+    g.add_edges(ids[0], ids[1])
 
     # data_dict[('ne', 'pim', 'ne')] = []
     cum = key_num
-    ne_pims = np.where(ne_pims.cpu().numpy()>0.5)
-    for i, j in zip(ne_pims[0], ne_pims[1]):
+    ids = np.where(ne_pims>0.7)
+    logger.info(f'ne pims {ids[0].shape[0]}')
+    logger.info(f'info word to word ne len {ids[0].shape[0]}')
+    for i, j in zip(ids[0], ids[1]):
         if i == j: continue
-        g.add_edges(i+cum, j+cum)
         edge_type.append(2)
         edge_weight.append(ne_pims[i][j])
+    g.add_edges(ids[0]+cum, ids[1]+cum)
 
     # data_dict[('ne', 'sim', 'ne')] = []
-    ne_sims = np.where(ne_sims.cpu().numpy()>0.5)
-    for i, j in zip(ne_sims[0], ne_sims[1]):
+    ids = np.where(ne_sims>0.7)
+    logger.info(f'ne sims {ids[0].shape[0]}')
+    logger.info(f'info word to word ne len {ids[0].shape[0]}')
+    for i, j in zip(ids[0], ids[1]):
         if i == j: continue
-        g.add_edges(i+cum, j+cum)
         edge_type.append(3)
         edge_weight.append(ne_sims[i][j])
+    g.add_edges(ids[0]+cum, ids[1]+cum)
 
     # data_dict[('ws', 'pim', 'ws')] = []
-    cum += ne_num
-    ws_pims = np.where(ws_pims.cpu().numpy()>0.5)
-    for i, j in zip(ws_pims[0], ws_pims[1]):
-        if i == j: continue
-        g.add_edges(i+cum, j+cum)
-        edge_type.append(4)
-        edge_weight.append(ws_pims[i][j])
+    # cum += ne_num
+    # ids = np.where(ws_pims>0.5)
+    # logger.info(f'ws pims {ids[0].shape[0]}')
+    # logger.info(f'info word to word ws len {ids[0].shape[0]}')
+    # for i, j in zip(ids[0], ids[1]):
+    #     if i == j: continue
+    #     edge_type.append(4)
+    #     edge_weight.append(ws_pims[i][j])
+    # g.add_edges(ids[0], ids[1])
 
-    # data_dict[('ws', 'sim', 'ws')] = []
-    ws_sims = np.where(ws_sims.cpu().numpy()>0.5)
-    for i, j in zip(ws_sims[0], ws_sims[1]):
-        if i == j: continue
-        g.add_edges(i+cum, j+cum)
-        edge_type.append(5)
-        edge_weight.append(ws_sims[i][j])
+    # # data_dict[('ws', 'sim', 'ws')] = []
+    # ids = np.where(ws_sims>0.5)
+    # logger.info(f'ws sims {ids[0].shape[0]}')
+    # logger.info(f'info word to word ws len {ids[0].shape[0]}')
+    # for i, j in zip(ids[0], ids[1]):
+    #     if i == j: continue
+    #     edge_type.append(5)
+    #     edge_weight.append(ws_sims[i][j])
+    # g.add_edges(ids[0], ids[1])
+    # logger.info('info word to word')
 
-    # docs features
-    # for i, bert_feature in enumerate(bert_features):
-    #     f = None
-    #     for j in range(len(bert_feature[0])):
-    #         if f is None:
-    #             f = bert_feature[0][j].mean(axis=0)
-    #         else:
-    #             f += bert_feature[0][j].mean(axis=0)
-    #     f /= len(bert_feature[0])
-    #     features.append(f.expand_dims=(axis=0))
+
 
     # doc to doc relations
     rfs = np.zeros((doc_num, doc_num, 4))
@@ -272,96 +291,101 @@ def load_multi_relations_corpus(data_paths):
     for i, bert_similarity in enumerate(bert_similarities):
         ids = np.where(bert_similarity[3]>0.5)[0]
         for id in ids:
-            g.add_edges(i+cum, bert_similarity[2][id]+cum)
             edge_type.append(6)
-            edge_weight.append(bert_similarity[3][i][j])
-            rfs[i, bert_similarity[2][id], 0] = bert_similarity[3][i][j]
+            edge_weight.append(bert_similarity[3][id])
+            rfs[i, bert_similarity[2][id], 0] = bert_similarity[3][id]
+        g.add_edges(i+cum, bert_similarity[2][ids]+cum)
 
     # data_dict[('doc', 'key_inclusion', 'doc')] = []
     ids = np.where(key_inclusions>0.5)
+    logger.info(f'key inclusions {ids[0].shape[0]}')
     for i, j in zip(ids[0], ids[1]):
         if i == j: continue
-        g.add_edges(i+cum, j+cum)
         edge_type.append(7)
         edge_weight.append(key_inclusions[i][j])
         rfs[i, j, 1] = key_inclusions[i][j]
+    g.add_edges(ids[0]+cum, ids[1]+cum)
 
     # data_dict[('doc', 'ne_inclusion', 'doc')] = []
     ids = np.where(ne_inclusions>0.5)
+    logger.info(f'ne inclusions {ids[0].shape[0]}')
     for i, j in zip(ids[0], ids[1]):
         if i == j: continue
-        g.add_edges(i+cum, j+cum)
         edge_type.append(8)
         edge_weight.append(ne_inclusions[i][j])
         rfs[i, j, 2] = ne_inclusions[i][j]
+    g.add_edges(ids[0]+cum, ids[1]+cum)
 
     # data_dict[('doc', 'ws_inclusion', 'doc')] = []
-    ids = np.where(ws_inclusions>0.5)
-    for i, j in zip(ids[0], ids[1]):
-        if i == j: continue
-        g.add_edges(i+cum, j+cum)
-        edge_type.append(9)
-        edge_weight.append(ws_inclusions[i][j])
-        rfs[i, j, 3] = ws_inclusions[i][j]
+    # ids = np.where(ws_inclusions>0.5)
+    # logger.info(f'ws inclusions {ids[0].shape[0]}')
+    # for i, j in zip(ids[0], ids[1]):
+    #     if i == j: continue
+    #     edge_type.append(9)
+    #     edge_weight.append(ws_inclusions[i][j])
+    #     rfs[i, j, 3] = ws_inclusions[i][j]
+    # g.add_edges(ids[0]+cum, ids[1]+cum)
 
     # data_dict[('doc', 'gt', 'doc')] = []
+    src, dest = [], []
     for match in matching_table:
         match = list(map(int, match))
-        g.add_edges(match[0]+cum, match[1]+cum)
+        src.append(match[0]+cum)
+        dest.append(match[1]+cum)
         edge_type.append(10)
         edge_weight.append(1)
+    
+    g.add_edges(src, dest)
+
+    logger.info('info doc to doc')
 
     # doc to word relations
     # data_dict[('doc', 'key_tf_idf', 'key')] = []
     # data_dict[('key', 'key_tf_idf', 'doc')] = []
     cum2 = 0
     ids = np.where(key_tf_idfs>0)
+    logger.info(f'key tf idfs {ids[0].shape[0]}')
     for i, j in zip(ids[0], ids[1]):
-        g.add_edges(i+cum, j+cum2)
         edge_type.append(11)
         edge_weight.append(key_tf_idfs[i][j])
-        # g.add_edges(j+cum2, i+cum)
-        # edge_type.append(12)
-        # edge_weight.append(key_tf_idfs[i][j])
+    g.add_edges(ids[0]+cum, ids[1]+cum2)
 
     # data_dict[('doc', 'ne_tf_idf', 'ne')] = []
     # data_dict[('ne', 'ne_tf_idf', 'doc')] = []
     cum2 += key_num
     ids = np.where(ne_tf_idfs>0)
+    logger.info(f'ne tf idfs {ids[0].shape[0]}')
     for i, j in zip(ids[0], ids[1]):
-        g.add_edges(i+cum, j+cum2)
         edge_type.append(12)
         edge_weight.append(ne_tf_idfs[i][j])
-        # g.add_edges(j+cum2, i+cum)
-        # edge_type.append(14)
-        # edge_weight.append(ne_tf_idfs[i][j])
+    g.add_edges(ids[0]+cum, ids[1]+cum2)
 
     # data_dict[('doc', 'ws_tf_idf', 'word')] = []
     # data_dict[('word', 'ws_tf_idf', 'doc')] = []
-    cum2 += ne_num
-    ids = np.where(ws_tf_idfs>0)
-    for i, j in zip(ids[0], ids[1]):
-        g.add_edges(i+cum, j+cum2)
-        edge_type.append(13)
-        edge_weight.append(ws_tf_idfs[i][j])
-        # g.add_edges(j+cum2, i+cum)
-        # edge_type.append(16)
-        # edge_weight.append(ws_tf_idfs[i][j])
+    # cum2 += ne_num
+    # ids = np.where(ws_tf_idfs>0)
+    # logger.info(f'ws tf idfs {ids[0].shape[0]}')
+    # for i, j in zip(ids[0], ids[1]):
+    #     edge_type.append(13)
+    #     edge_weight.append(ws_tf_idfs[i][j])
+    # g.add_edges(ids[0]+cum, ids[1]+cum2)
+
+    logger.info('info doc to word')
 
     cum += doc_num
     g.add_edges(g.edges()[1], g.edges()[0])
-    word_features = np.concatenate(features, axis=0)
+    word_features = np.concatenate(word_features, axis=0)
     edge_type += list(map(lambda x:x+cum, edge_type))
     edge_weight *= 2
 
-    in_deg = g.in_degrees(range(g.number_of_nodes())).float().numpy()
+    in_deg = g.in_degrees(range(g.number_of_nodes())).float()#.numpy()
     norm = in_deg ** -0.5
-    norm[np.isinf(norm)] = 0
+    norm[torch.isinf(norm)] = 0
     g.ndata['xxx'] = norm
     g.apply_edges(lambda edges: {'xxx': edges.dst['xxx'] * edges.src['xxx']})
-    norm = self.g.edata.pop('xxx').squeeze()
+    norm = g.edata.pop('xxx').squeeze()
 
-    return g, edge_type, edge_weight, norm, word_features, key_num+ne_num+ws_num, doc_num, doc_mask, test_mask, rfs, 
+    return g, edge_type, edge_weight, norm, word_features, key_num+ne_num+ws_num, doc_num, doc_mask, test_mask, rfs
     # return adj, features, y_train, y_val, y_test, train_mask, val_mask, test_mask, train_size, test_size
 
 def load_corpus(dataset_str):
