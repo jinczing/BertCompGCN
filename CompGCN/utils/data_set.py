@@ -67,7 +67,7 @@ class TrainBinaryDataset(Dataset):
 
 class BinarySampler(Sampler):
 
-    def __init__(self, pos_num, neg_num, length_before_new_iter=500):
+    def __init__(self, pos_num, neg_num, length_before_new_iter=1000):
         super(BinarySampler, self).__init__([])
         self.pos_num = pos_num
         self.neg_num = neg_num
@@ -79,7 +79,7 @@ class BinarySampler(Sampler):
     def __iter__(self):
         l = []
         for i in range(self.length_before_new_iter):
-            l.append(np.random.randint(self.pos_num+self.neg_num))
+            l.append(np.random.randint(self.pos_num))
         # print(self.pos_num, self.neg_num, flush=True)
             # ran = np.random.randint(2)
             # if ran:

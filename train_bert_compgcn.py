@@ -3,7 +3,6 @@ sys.path.append('./CompGCN')
 
 import torch as th
 import torch
-from transformers import AutoModel, AutoTokenizer
 import torch.nn.functional as F
 from utils import *
 import dgl
@@ -26,21 +25,18 @@ import ast
 from CompGCN.utils import TrainBinaryDataset, TestBinaryDataset, InferenceDataset, BinarySampler, TestBinarySampler
 from collections import defaultdict as ddict
 from itertools import combinations
-import random
-from transformers.models.bert.modeling_bert import BertModel
-from transformers import BertTokenizer, BertConfig
 import pickle
 from torch.utils.data import DataLoader
 from opencc import OpenCC
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--max_length', type=int, default=128, help='the input length for bert')
-parser.add_argument('--batch_size', type=int, default=2)
+parser.add_argument('--batch_size', type=int, default=64)
 parser.add_argument('-m', '--m', type=float, default=0.7, help='the factor balancing BERT and GCN prediction')
 parser.add_argument('--nb_epochs', type=int, default=50)
 parser.add_argument('--bert_init', type=str, default='hfl/chinese-macbert-base',
                     choices=['hfl/chinese-macbert-base', 'roberta-base', 'roberta-large', 'bert-base-uncased', 'bert-large-uncased'])
-parser.add_argument('--pretrained_bert_ckpt', default=None)
+parser.add_argument('--pretrained_bert_ckpt', default='./epoch=27.ckpt')
 parser.add_argument('--graph_cache', type=str, default='./graph')
 parser.add_argument('--triplet_cache', type=str, default='./triplet')
 parser.add_argument('--init_embed_cache', type=str, default='./init_embed')
@@ -124,6 +120,14 @@ logger.info('arguments:')
 logger.info(str(args))
 logger.info('checkpoints will be saved in {}'.format(ckpt_dir))
 
+if pretrained_bert_ckpt is not None:
+    ckpt = torch.load(args.pretrained_bert_ckpt, map_location=device)['state_dict']
+    bert_state_dict = {k.replace('model.macbert.', ''):v for k, v in ckpt.items() if 'model.macbert' in k}
+
+import random
+from transformers.models.bert.modeling_bert import BertModel
+from transformers import BertTokenizer, BertConfig
+from transformers import AutoModel, AutoTokenizer
 
 # Data Preprocess
 data_paths = {}
@@ -132,7 +136,7 @@ for path in os.listdir(args.rel_dir):
         data_paths[os.path.basename(path).split('.')[0]] = os.path.join(args.rel_dir, path)
 
 if not os.path.exists(args.graph_cache):
-    return_tuple = load_multi_relations_corpus(data_paths, logger)
+    return_tuple = load_multi_relations_doc(data_paths, logger)
     with open(args.graph_cache, 'wb') as f:
         pickle.dump(return_tuple, f)
 else:
@@ -154,10 +158,7 @@ tokenizer = BertTokenizer.from_pretrained("hfl/chinese-macbert-base")
 t2s = OpenCC('t2s').convert
 bert_model = BertModel(config)
 bert_model.to(device)
-if pretrained_bert_ckpt is not None:
-    ckpt = torch.load(args.pretrained_bert_ckpt, map_location=device)['state_dict']
-    bert_state_dict = {k.replace('model.macbert.', ''):v for k, v in s.items() if 'model.macbert' in k}
-    bert_model.load_state_dict(bert_state_dict)
+bert_model.load_state_dict(bert_state_dict)
 args.init_dim = list(bert_model.modules())[-2].out_features # todo: setup init_dim
 
 logger.info('loaded bert model')
@@ -184,7 +185,7 @@ for a_id, article in enumerate(tqdm.tqdm(all_articles)):
 for i, doc in enumerate(docs):
     for j, sec in enumerate(doc):
         for k , sent in enumerate(sec):
-            inputs = tokenizer(t2s(sent), max_length=args.max_length, truncation=True, padding='max_length', return_tensors='pt')
+            inputs = tokenizer(t2s(sent), max_length=args.max_length, truncation=True, return_tensors='pt') # padding='max_length'
             docs[i][j][k] = inputs
 
 logger.info('loaded docs')
@@ -198,75 +199,75 @@ nb_edge = len(edge_type)
 doc_embeds_g = None
 def update_feature():
     global bert_model, model, g, doc_mask, doc_embeds_g, docs
-    bert_model.eval()
-    doc_l = []
-    sents = []
-    for doc in docs:
-        l = 0
-        for sec in doc:
-            for sent in sec:
-                sents.append(sent['input_ids'].to(device))
-            l += len(sec)
-        doc_l.append(l)
-    sents = torch.cat(sents, dim=0)
-    bs = 512
-    outputs = []
-    with torch.no_grad():
-        for i in tqdm.tqdm(range(sents.size(0)//bs+1)):
-            output = list(
-                bert_model(
-                    sents[i*bs:(i+1)*bs],
-                    attention_mask=None,
-                    token_type_ids=None,
-                    position_ids=None,
-                    head_mask=None,
-                    inputs_embeds=None,
-                    output_hidden_states=False,
-                    return_dict=False,
-                )
-            )[0]
-            outputs.append(output)
-        outputs = torch.cat(outputs, dim=0)
-        cum = 0
-        ds = []
-        for i, l in enumerate(doc_l):
-            ds.append(outputs[cum:cum+l].mean(1).mean(0).unsqueeze(0))
-            cum += l
-        doc_embeds_g = torch.cat(ds, dim=0).clone()
-        print(doc_embeds_g.max(), doc_embeds_g.min())
-
     # bert_model.eval()
+    # doc_l = []
+    # sents = []
+    # for doc in docs:
+    #     l = 0
+    #     for sec in doc:
+    #         for sent in sec:
+    #             sents.append(sent['input_ids'].to(device))
+    #         l += len(sec)
+    #     doc_l.append(l)
+    # sents = torch.cat(sents, dim=0)
+    # bs = 512
+    # outputs = []
     # with torch.no_grad():
-    #     doc_embeds = []
-    #     for doc in tqdm.tqdm(docs):
-    #         doc_embed = None
-    #         for sec in doc:
-    #             sec_embed = None
-    #             for sent in sec:
-    #                 output = list(
-    #                     bert_model(
-    #                         sent['input_ids'].to(device),
-    #                         # attention_mask=sent['attention_mask'].to(device),
-    #                         token_type_ids=None,
-    #                         position_ids=None,
-    #                         head_mask=None,
-    #                         inputs_embeds=None,
-    #                         output_hidden_states=False,
-    #                         return_dict=False,
-    #                     )
-    #                 )[0].squeeze(0)
-    #                 if sec_embed is None:
-    #                     sec_embed = output.mean(0)
-    #                 else:
-    #                     sec_embed += output.mean(0)
-    #             sec_embed /= len(sec)
-    #             if doc_embed is None:
-    #                 doc_embed = sec_embed
-    #             else:
-    #                 doc_embed += sec_embed
-    #         doc_embed /= len(doc)
-    #         doc_embeds.append(doc_embed.unsqueeze(0))
-    #     doc_embeds_g = torch.cat(doc_embeds, dim=0)
+    #     for i in tqdm.tqdm(range(sents.size(0)//bs+1)):
+    #         output = list(
+    #             bert_model(
+    #                 sents[i*bs:(i+1)*bs],
+    #                 attention_mask=None,
+    #                 token_type_ids=None,
+    #                 position_ids=None,
+    #                 head_mask=None,
+    #                 inputs_embeds=None,
+    #                 output_hidden_states=False,
+    #                 return_dict=False,
+    #             )
+    #         )[0]
+    #         outputs.append(output)
+    #     outputs = torch.cat(outputs, dim=0)
+    #     cum = 0
+    #     ds = []
+    #     for i, l in enumerate(doc_l):
+    #         ds.append(outputs[cum:cum+l].mean(1).mean(0).unsqueeze(0))
+    #         cum += l
+    #     doc_embeds_g = torch.cat(ds, dim=0).clone()
+    #     print(doc_embeds_g.max(), doc_embeds_g.min())
+
+    bert_model.eval()
+    with torch.no_grad():
+        doc_embeds = []
+        for doc in tqdm.tqdm(docs):
+            doc_embed = None
+            for sec in doc:
+                sec_embed = None
+                for sent in sec:
+                    output = list(
+                        bert_model(
+                            sent['input_ids'].to(device),
+                            # attention_mask=sent['attention_mask'].to(device),
+                            token_type_ids=None,
+                            position_ids=None,
+                            head_mask=None,
+                            inputs_embeds=None,
+                            output_hidden_states=False,
+                            return_dict=False,
+                        )
+                    )[0].squeeze(0)
+                    if sec_embed is None:
+                        sec_embed = output.mean(0)
+                    else:
+                        sec_embed += output.mean(0)
+                sec_embed /= len(sec)
+                if doc_embed is None:
+                    doc_embed = sec_embed
+                else:
+                    doc_embed += sec_embed
+            doc_embed /= len(doc)
+            doc_embeds.append(doc_embed.unsqueeze(0))
+        doc_embeds_g = torch.cat(doc_embeds, dim=0)
 if not os.path.exists(args.init_embed_cache):
     update_feature()
     with open(args.init_embed_cache, 'wb') as f:
@@ -449,7 +450,7 @@ class F1_Loss(torch.nn.Module):
         ys = []
         for pred in y_pred:
             if pred<0.5:
-                ys.append(torch.Tensor([pred.item(), 1-pred.item()]).to(device).unsqueeze(0))
+                ys.append(torch.Tensor([1-pred.item(), pred.item()]).to(device).unsqueeze(0))
             else:
                 ys.append(torch.Tensor([1-pred.item(), pred.item()]).to(device).unsqueeze(0))
         y_pred = torch.cat(ys, dim=0)
@@ -542,22 +543,22 @@ def train_step(engine, batch):
     triplets, labels, hards = triplets.to(device), labels.to(device), hards.to(device)
     subj, rel = triplets[:, 0], triplets[:, 1]
 
-    nf = compute_doc_embeds(subj, docs, doc_embeds_g.clone()).float()
-    # nf = doc_embeds_g.clone().float()
+    # nf = compute_doc_embeds(subj, docs, doc_embeds_g.clone()).float()
+    nf = doc_embeds_g.clone().float()
     # print(doc_embeds_g.max(), doc_embeds_g.min())
     rf = rfs[subj, ...].float() # [subj, num_ent, 4]
 
     preds = model(nf, g, subj, rel, rf)  # [batch_size, num_ent]
     # print(preds.shape, preds.max(), preds.min())
-    loss = model.calc_loss(preds, labels)
+    loss = model.calc_loss(preds.flatten(), labels.flatten())
     
     loss.backward()
     optimizer.step()
 
     f1_score = f1_loss(preds.flatten(), hards.flatten().long()).item()
     f1_score_hard = f1_loss(preds.flatten().round(), hards.flatten().long()).item()
-    if iteration%10 == 0:
-        print('{:.4f} {:.4f} {:.4f} {:.4f} {:.4f}'.format(loss.item(), f1_score, f1_score_hard, preds.round().sum().item(), hards.sum().item()))
+    # if iteration%10 == 0:
+    print('{:.4f} {:.4f} {:.4f} {:.4f} {:.4f}'.format(loss.item(), f1_score, f1_score_hard, preds.round().sum().item(), hards.sum().item()))
 
     iteration += 1
     
@@ -570,7 +571,7 @@ trainer = Engine(train_step)
 @trainer.on(Events.EPOCH_COMPLETED)
 def reset_graph(trainer):
     scheduler.step()
-    update_feature()
+    # update_feature()
     th.cuda.empty_cache()
     global iteration
     iteration = 0
@@ -578,7 +579,7 @@ def reset_graph(trainer):
 def test_step(engine, batch):
     global bert_model, model, g, doc_embeds_g, rfs, device
     with th.no_grad():
-        model.eval()
+        # model.eval()
 
         (triplets, labels, hards) = batch
         triplets, labels, hards = triplets.to(device), labels.to(device), hards.to(device)
@@ -586,6 +587,7 @@ def test_step(engine, batch):
         nf = doc_embeds_g.clone().float()
         rf = rfs[subj, ...].float()
         preds = model(nf, g, subj, rel, rf)  # [batch_size, num_ent]
+        # print(preds.round().sum(), hards.sum(dim=-1))
         # p = []
         # for pred in preds.flatten():
         #     if pred<0.5:
@@ -614,12 +616,12 @@ for n, f in metrics.items():
 @trainer.on(Events.EPOCH_COMPLETED)
 def log_training_results(trainer):
     
-    train_iter = data_iter['train']
+    train_iter = test_data_iter['train']
     evaluator.run(train_iter)
     metrics = evaluator.state.metrics
     train_precision, train_recall, train_f1 = metrics["precision"], metrics["recall"], metrics["f1"]
 
-    val_iter = data_iter['val']
+    val_iter = test_data_iter['val']
     evaluator.run(val_iter)
     metrics = evaluator.state.metrics
     val_precision, val_recall, val_f1 = metrics["precision"], metrics["recall"], metrics["f1"]

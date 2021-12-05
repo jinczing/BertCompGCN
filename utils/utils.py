@@ -117,6 +117,151 @@ def load_data(dataset_str):
 
     return adj, features, y_train, y_val, y_test, train_mask, val_mask, test_mask
 
+def load_multi_relations_doc(data_paths, logger):
+    '''
+
+    doc2doc
+        * docs
+            -Similarity
+            -Keyword Inclusion
+            -Named Entity Inclusion
+            -Keyword TF-IDFs
+            -Named Entity TF-IDFs
+            -Ground Truth Relation
+    '''
+    data_dict = {}
+    g = dgl.DGLGraph()
+    word_features = []
+    edge_type = []
+    edge_weight = []
+    
+
+    bert_similarities = torch.load(data_paths['bert_similarities'])
+
+    with open(data_paths['key_inclusions'], 'rb') as f:
+        key_inclusions = pkl.load(f)
+    with open(data_paths['ne_inclusions'], 'rb') as f:
+        ne_inclusions = pkl.load(f)
+    with open(data_paths['matching_table']) as f:
+        matching_table = list(csv.reader(f))[1:]
+
+    with open(data_paths['key_tf_idfs'], 'rb') as f:
+        key_tf_idfs = pkl.load(f)
+    with open(data_paths['ne_tf_idfs'], 'rb') as f:
+        ne_tf_idfs = pkl.load(f)
+
+
+    doc_num = key_inclusions.shape[0]
+    edge_type_num = 0
+
+    g.add_nodes(doc_num)
+    doc_mask = [True]*doc_num
+    test_num = 421
+    test_mask = [False]*(g.num_nodes()-test_num) + [True]*test_num
+
+
+
+    # doc to doc relations
+    rfs = np.zeros((doc_num, doc_num, 4))
+
+    # data_dict[('doc', 'sim', 'doc')] = []
+    doc_title_to_ids = []
+    for i, bert_similarity in enumerate(bert_similarities):
+        doc_title_to_ids.append(bert_similarity[0])
+        ids = np.where(bert_similarity[3]>0.5)[0]
+        for id in ids:
+            edge_type.append(edge_type_num)
+            edge_weight.append(bert_similarity[3][id])
+            rfs[i, bert_similarity[2][id], 0] = bert_similarity[3][id]
+        g.add_edges(i, bert_similarity[2][ids])
+    edge_type_num += 1
+
+    # data_dict[('doc', 'key_inclusion', 'doc')] = []
+    # ids = list(np.where(key_inclusions>0.5))
+    # logger.info(f'key inclusions {ids[0].shape[0]}')
+    # for i, j in zip(ids[0], ids[1]):
+    #     if i == j: continue
+    #     edge_type.append(7)
+    #     edge_weight.append(key_inclusions[i][j])
+    #     rfs[i, j, 1] = key_inclusions[i][j]
+    # mask = np.where(ids[0]!=ids[1])[0]
+    # ids[0] = ids[0][mask]
+    # ids[1] = ids[1][mask]
+    # g.add_edges(ids[0]+cum, ids[1]+cum)
+    # print(g.num_edges(), len(edge_type))
+
+    # data_dict[('doc', 'ne_inclusion', 'doc')] = []
+    # ids = list(np.where(ne_inclusions>0.5))
+    # logger.info(f'ne inclusions {ids[0].shape[0]}')
+    # for i, j in zip(ids[0], ids[1]):
+    #     if i == j: continue
+    #     edge_type.append(8)
+    #     edge_weight.append(ne_inclusions[i][j])
+    #     rfs[i, j, 2] = ne_inclusions[i][j]
+    # mask = np.where(ids[0]!=ids[1])[0]
+    # ids[0] = ids[0][mask]
+    # ids[1] = ids[1][mask]
+    # g.add_edges(ids[0]+cum, ids[1]+cum)
+    # print(g.num_edges(), len(edge_type))
+
+
+    # data_dict[('doc', 'gt', 'doc')] = []
+    src, dest = [], []
+    for match in matching_table:
+        src.append(doc_title_to_ids.index(match[0]))
+        dest.append(doc_title_to_ids.index(match[1]))
+        edge_type.append(edge_type_num)
+        edge_weight.append(1)
+    g.add_edges(src, dest)
+    gt_edge_id = edge_type_num
+    edge_type_num += 1
+    
+
+    key_tf_idfs/=np.linalg.norm(key_tf_idfs, axis=-1, keepdims=True)
+    key_sim = np.matmul(key_tf_idfs, key_tf_idfs.transpose(1, 0)) # doc_num*doc_num
+
+    ne_tf_idfs/=np.linalg.norm(ne_tf_idfs, axis=-1, keepdims=True)
+    ne_sim = np.matmul(ne_tf_idfs, ne_tf_idfs.transpose(1, 0))
+
+    key_num = 0
+    for i in range(doc_num):
+        ids = np.where(key_sim[i]>0.5)[0]
+        key_num += ids.shape[0]
+        for id in ids:
+            if i == id: continue
+            edge_type.append(edge_type_num)
+            edge_weight.append(key_sim[i][id])
+        ids = ids[ids!=i]
+        g.add_edges(i, ids)
+    edge_type_num += 1
+
+    ne_num = 0
+    for i in range(doc_num):
+        ids = np.where(ne_sim[i]>0.5)[0]
+        ne_num += ids.shape[0]
+        for id in ids:
+            if i == id: continue
+            edge_type.append(edge_type_num)
+            edge_weight.append(ne_sim[i][id])
+        ids = ids[ids!=i]
+        g.add_edges(i, ids)
+    edge_type_num += 1
+
+    print('key ne', key_num, ne_num)
+
+    g.add_edges(g.edges()[1], g.edges()[0])
+    edge_type += list(map(lambda x:x+edge_type_num, edge_type))
+    edge_weight *= 2
+
+    in_deg = g.in_degrees(range(g.number_of_nodes())).float()
+    norm = in_deg ** -0.5
+    norm[torch.isinf(norm)] = 0
+    g.ndata['xxx'] = norm
+    g.apply_edges(lambda edges: {'xxx': edges.dst['xxx'] * edges.src['xxx']})
+    norm = g.edata.pop('xxx').squeeze()
+
+    return g, edge_type, edge_weight, norm, np.array([0]), 0, doc_num, doc_mask, test_mask, rfs, edge_type_num, gt_edge_id
+
 def load_multi_relations_corpus(data_paths, logger):
     '''
     word2word:

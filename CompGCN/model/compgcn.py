@@ -80,7 +80,7 @@ class CompGCN_W(nn.Module):
         self.n_layer = n_layer
         self.doc_num = doc_num
 
-        self.init_embed = self.get_param([self.num_ent, self.init_dim])  # initial embedding for entities
+        self.init_embed = self.get_param([self.num_ent-self.doc_num, self.init_dim])  # initial embedding for entities
         if self.num_base > 0:
             # linear combination of a set of basis vectors
             self.init_rel = self.get_param([self.num_base, self.init_dim])
@@ -95,9 +95,8 @@ class CompGCN_W(nn.Module):
         self.bias = nn.Parameter(torch.zeros(self.doc_num))
 
         self.m = m
-        self.word_features = nn.Parameter(word_features)
-        self.doc_features = nn.Parameter(doc_features)
-        self.word_num = word_features.size(0)
+        # self.word_features = nn.Parameter(word_features)
+        # self.doc_features = nn.Parameter(doc_features)
 
     def get_param(self, shape):
         param = nn.Parameter(torch.Tensor(*shape))
@@ -121,15 +120,16 @@ class CompGCN_W(nn.Module):
         # x, r = nf, rf  # embedding of relations
         # print(self.word_features.shape, nf.shape)
         # torch.cat([self.word_features, nf], dim=0) torch.cat([self.word_features, self.doc_features])
-        x, r = torch.cat([self.word_features, nf], dim=0), self.init_rel  # embedding of relations
+        device = nf.device # torch.zeros(self.num_ent-self.doc_num, nf.size(-1)).to(device)
+        x, r = nf, self.init_rel  # embedding of relations
         x, r = self.conv1(g, x, r, self.edge_type, self.edge_norm, self.edge_weight)
         x = drop1(x)  # embeddings of entities [num_ent, dim]
         x, r = self.conv2(g, x, r, self.edge_type, self.edge_norm, self.edge_weight) if self.n_layer == 2 else (x, r)
         x = drop2(x) if self.n_layer == 2 else x
-        sub_emb = torch.index_select(x, 0, self.word_num+subj)  # filter out embeddings of subjects in this batch
+        sub_emb = torch.index_select(x, 0, subj)  # filter out embeddings of subjects in this batch
         rel_emb = torch.index_select(r, 0, rel)  # filter out embeddings of relations in this batch
 
-        return sub_emb, rel_emb, x[self.word_num:]
+        return sub_emb, rel_emb, x
 
 
 class CompGCN_DistMult(CompGCN):
@@ -398,6 +398,7 @@ class CompGCN_ConvE_W(CompGCN_W):
         sub_emb, rel_emb, all_ent = self.forward_base(nf, g, subj, rel, self.drop, self.input_drop)
         stack_input = self.concat(sub_emb, rel_emb)  # [batch_size, 1, 2*k_h, k_w]
         x = self.bn0(stack_input)
+        x = stack_input
         x = self.conv2d(x)  # [batch_size, num_filt, flat_sz_h, flat_sz_w]
         x = self.bn1(x)
         x = F.relu(x)
