@@ -48,7 +48,7 @@ class CompGCNCov(nn.Module):
         # NOTE: first half edges are all in-directions, last half edges are out-directions.
         msg = torch.cat([torch.matmul(edge_data[:edge_num // 2, :], self.in_w),
                          torch.matmul(edge_data[edge_num // 2:, :], self.out_w)])
-        msg = msg * edges.data['norm'].reshape(-1, 1) * edge_weight  
+        msg = msg * edges.data['norm'].reshape(-1, 1) * edge_weight.reshape(-1, 1)  
         # [E, D] * [E, 1] * [E, 1]
         return {'msg': msg}
 

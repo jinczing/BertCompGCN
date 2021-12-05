@@ -48,11 +48,13 @@ class TrainBinaryDataset(Dataset):
 
     def __getitem__(self, item):
         ele = self.triplets[item]
+        # print(item, ele, ele['label'])
         triple, label = torch.tensor(ele['triple'], dtype=torch.long), np.int32(ele['label'])
         label = self.get_label(label)
+        hard_label = label.clone()
         if self.label_smooth != 0.0:
             label = (1.0 - self.label_smooth) * label + (1.0 / self.num_ent)
-        return triple, label
+        return triple, label, hard_label
 
     def get_label(self, label):
         """
@@ -60,13 +62,14 @@ class TrainBinaryDataset(Dataset):
         :param label: a list containing indices of objects corresponding to a (sub, rel) pair
         :return: a tensor of shape [nun_ent]
         """
+        # print(self.num_ent, label)
         y = np.zeros([self.num_ent], dtype=np.float32)
         y[label] = 1
-        return torch.tensor(y, dtype=torch.float32)
+        return torch.from_numpy(y)
 
 class BinarySampler(Sampler):
 
-    def __init__(self, pos_num, neg_num, length_before_new_iter=100000):
+    def __init__(self, pos_num, neg_num, length_before_new_iter=500):
         super(BinarySampler, self).__init__([])
         self.pos_num = pos_num
         self.neg_num = neg_num
@@ -78,11 +81,12 @@ class BinarySampler(Sampler):
     def __iter__(self):
         l = []
         for i in range(self.length_before_new_iter):
-            ran = np.random.randint(2)
-            if ran:
-                l.append(np.random.randint(self.pos_num))
-            else:
-                l.append(self.pos_num+np.random.randint(self.neg_num))
+            l.append(np.random.randint(self.pos_num))
+            # ran = np.random.randint(2)
+            # if ran:
+            #     l.append(np.random.randint(self.pos_num))
+            # else:
+            #     l.append(self.pos_num+np.random.randint(self.neg_num))
         return iter(l)
 
 class TestDataset(Dataset):
@@ -125,7 +129,8 @@ class TestBinaryDataset(Dataset):
         ele = self.triplets[item]
         triple, label = torch.tensor(ele['triple'], dtype=torch.long), np.int32(ele['label'])
         label = self.get_label(label)
-        return triple, label
+        hards = label.clone()
+        return triple, label, hards
 
     def get_label(self, label):
         """

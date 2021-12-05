@@ -214,53 +214,70 @@ def load_multi_relations_corpus(data_paths, logger):
     with open(data_paths['ne_berts'], 'rb') as f:
         ne_berts = pkl.load(f)
         word_features.append(ne_berts)
-    with open(data_paths['ws_berts'], 'rb') as f:
-        ws_berts = pkl.load(f)
-        word_features.append(ws_berts)
+    # with open(data_paths['ws_berts'], 'rb') as f:
+    #     ws_berts = pkl.load(f)
+    #     word_features.append(ws_berts)
 
     logger.info('info loaded data')
 
     # word to word 
     # data_dict[('key', 'pim', 'key')] = []
-    ids = np.where(key_pims>0.5)
+    ids = list(np.where(key_pims>5))
     logger.info(f'info word to word key len {ids[0].shape[0]}')
     for i, j in zip(ids[0], ids[1]):
         if i == j: continue
         edge_type.append(0)
         edge_weight.append(key_pims[i][j])
+    mask = np.where(ids[0]!=ids[1])[0]
+    ids[0] = ids[0][mask]
+    ids[1] = ids[1][mask]
     g.add_edges(ids[0], ids[1])
+    print(g.num_edges(), len(edge_type))
 
     # data_dict[('key', 'sim', 'key')] = []
-    ids = np.where(key_sims>0.5)
+    ids = list(np.where(key_sims>0.7))
     for i, j in zip(ids[0], ids[1]):
         if i == j: continue
         edge_type.append(1)
         edge_weight.append(key_sims[i][j])
+    mask = np.where(ids[0]!=ids[1])[0]
+    ids[0] = ids[0][mask]
+    ids[1] = ids[1][mask]
     g.add_edges(ids[0], ids[1])
+    print(g.num_edges(), len(edge_type))
 
     # data_dict[('ne', 'pim', 'ne')] = []
     cum = key_num
-    ids = np.where(ne_pims>0.7)
+    ids = list(np.where(ne_pims>5))
     logger.info(f'ne pims {ids[0].shape[0]}')
     logger.info(f'info word to word ne len {ids[0].shape[0]}')
     for i, j in zip(ids[0], ids[1]):
         if i == j: continue
         edge_type.append(2)
         edge_weight.append(ne_pims[i][j])
+    mask = np.where(ids[0]!=ids[1])[0]
+    ids[0] = ids[0][mask]
+    ids[1] = ids[1][mask]
     g.add_edges(ids[0]+cum, ids[1]+cum)
+    print(g.num_edges(), len(edge_type))
 
     # data_dict[('ne', 'sim', 'ne')] = []
-    ids = np.where(ne_sims>0.7)
+    ids = list(np.where(ne_sims>0.7))
     logger.info(f'ne sims {ids[0].shape[0]}')
     logger.info(f'info word to word ne len {ids[0].shape[0]}')
     for i, j in zip(ids[0], ids[1]):
         if i == j: continue
         edge_type.append(3)
         edge_weight.append(ne_sims[i][j])
+    mask = np.where(ids[0]!=ids[1])[0]
+    ids[0] = ids[0][mask]
+    ids[1] = ids[1][mask]
     g.add_edges(ids[0]+cum, ids[1]+cum)
+    print(g.num_edges(), len(edge_type))
+
 
     # data_dict[('ws', 'pim', 'ws')] = []
-    # cum += ne_num
+    cum += ne_num
     # ids = np.where(ws_pims>0.5)
     # logger.info(f'ws pims {ids[0].shape[0]}')
     # logger.info(f'info word to word ws len {ids[0].shape[0]}')
@@ -288,33 +305,44 @@ def load_multi_relations_corpus(data_paths, logger):
 
     cum += ws_num
     # data_dict[('doc', 'sim', 'doc')] = []
+    doc_title_to_ids = []
     for i, bert_similarity in enumerate(bert_similarities):
-        ids = np.where(bert_similarity[3]>0.5)[0]
+        doc_title_to_ids.append(bert_similarity[0])
+        ids = np.where(bert_similarity[3]>0.7)[0]
         for id in ids:
             edge_type.append(6)
             edge_weight.append(bert_similarity[3][id])
             rfs[i, bert_similarity[2][id], 0] = bert_similarity[3][id]
         g.add_edges(i+cum, bert_similarity[2][ids]+cum)
+    print(g.num_edges(), len(edge_type))
 
     # data_dict[('doc', 'key_inclusion', 'doc')] = []
-    ids = np.where(key_inclusions>0.5)
-    logger.info(f'key inclusions {ids[0].shape[0]}')
-    for i, j in zip(ids[0], ids[1]):
-        if i == j: continue
-        edge_type.append(7)
-        edge_weight.append(key_inclusions[i][j])
-        rfs[i, j, 1] = key_inclusions[i][j]
-    g.add_edges(ids[0]+cum, ids[1]+cum)
+    # ids = list(np.where(key_inclusions>0.5))
+    # logger.info(f'key inclusions {ids[0].shape[0]}')
+    # for i, j in zip(ids[0], ids[1]):
+    #     if i == j: continue
+    #     edge_type.append(7)
+    #     edge_weight.append(key_inclusions[i][j])
+    #     rfs[i, j, 1] = key_inclusions[i][j]
+    # mask = np.where(ids[0]!=ids[1])[0]
+    # ids[0] = ids[0][mask]
+    # ids[1] = ids[1][mask]
+    # g.add_edges(ids[0]+cum, ids[1]+cum)
+    # print(g.num_edges(), len(edge_type))
 
     # data_dict[('doc', 'ne_inclusion', 'doc')] = []
-    ids = np.where(ne_inclusions>0.5)
-    logger.info(f'ne inclusions {ids[0].shape[0]}')
-    for i, j in zip(ids[0], ids[1]):
-        if i == j: continue
-        edge_type.append(8)
-        edge_weight.append(ne_inclusions[i][j])
-        rfs[i, j, 2] = ne_inclusions[i][j]
-    g.add_edges(ids[0]+cum, ids[1]+cum)
+    # ids = list(np.where(ne_inclusions>0.5))
+    # logger.info(f'ne inclusions {ids[0].shape[0]}')
+    # for i, j in zip(ids[0], ids[1]):
+    #     if i == j: continue
+    #     edge_type.append(8)
+    #     edge_weight.append(ne_inclusions[i][j])
+    #     rfs[i, j, 2] = ne_inclusions[i][j]
+    # mask = np.where(ids[0]!=ids[1])[0]
+    # ids[0] = ids[0][mask]
+    # ids[1] = ids[1][mask]
+    # g.add_edges(ids[0]+cum, ids[1]+cum)
+    # print(g.num_edges(), len(edge_type))
 
     # data_dict[('doc', 'ws_inclusion', 'doc')] = []
     # ids = np.where(ws_inclusions>0.5)
@@ -329,13 +357,12 @@ def load_multi_relations_corpus(data_paths, logger):
     # data_dict[('doc', 'gt', 'doc')] = []
     src, dest = [], []
     for match in matching_table:
-        match = list(map(int, match))
-        src.append(match[0]+cum)
-        dest.append(match[1]+cum)
+        src.append(doc_title_to_ids.index(match[0])+cum)
+        dest.append(doc_title_to_ids.index(match[1])+cum)
         edge_type.append(10)
         edge_weight.append(1)
-    
     g.add_edges(src, dest)
+    print(g.num_edges(), len(edge_type))
 
     logger.info('info doc to doc')
 
@@ -349,6 +376,7 @@ def load_multi_relations_corpus(data_paths, logger):
         edge_type.append(11)
         edge_weight.append(key_tf_idfs[i][j])
     g.add_edges(ids[0]+cum, ids[1]+cum2)
+    print(g.num_edges(), len(edge_type))
 
     # data_dict[('doc', 'ne_tf_idf', 'ne')] = []
     # data_dict[('ne', 'ne_tf_idf', 'doc')] = []
@@ -359,6 +387,7 @@ def load_multi_relations_corpus(data_paths, logger):
         edge_type.append(12)
         edge_weight.append(ne_tf_idfs[i][j])
     g.add_edges(ids[0]+cum, ids[1]+cum2)
+    print(g.num_edges(), len(edge_type))
 
     # data_dict[('doc', 'ws_tf_idf', 'word')] = []
     # data_dict[('word', 'ws_tf_idf', 'doc')] = []
@@ -375,8 +404,9 @@ def load_multi_relations_corpus(data_paths, logger):
     cum += doc_num
     g.add_edges(g.edges()[1], g.edges()[0])
     word_features = np.concatenate(word_features, axis=0)
-    edge_type += list(map(lambda x:x+cum, edge_type))
+    edge_type += list(map(lambda x:x+13, edge_type))
     edge_weight *= 2
+    print(g.num_edges(), len(edge_type))
 
     in_deg = g.in_degrees(range(g.number_of_nodes())).float()#.numpy()
     norm = in_deg ** -0.5
