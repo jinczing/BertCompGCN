@@ -31,6 +31,9 @@ class CompGCNCov(nn.Module):
         else:
             self.rel_wt = None
 
+        self.rel_bn = torch.nn.BatchNorm1d(in_channels+1)
+        self.weight_map = nn.Linear(in_channels+1, in_channels)
+
     def get_param(self, shape):
         param = nn.Parameter(torch.Tensor(*shape))
         nn.init.xavier_normal_(param, gain=nn.init.calculate_gain('relu'))
@@ -40,7 +43,11 @@ class CompGCNCov(nn.Module):
         edge_type = edges.data['type']  # [E, 1]
         edge_weight = edges.data['weight'] # [E, 1]
         edge_num = edge_type.shape[0]
-        edge_data = self.comp(edges.src['h'], self.rel[edge_type])  # [E, in_channel]
+        # rel = self.rel[edge_type]
+        rel = torch.cat([self.rel[edge_type], edge_weight.unsqueeze(-1)], dim=-1)
+        rel = self.rel_bn(rel)
+        rel = self.weight_map(rel)
+        edge_data = self.comp(edges.src['h'], rel)  # [E, in_channel]
         # msg = torch.bmm(edge_data.unsqueeze(1),
         #                 self.w[edge_dir.squeeze()]).squeeze()  # [E, 1, in_c] @ [E, in_c, out_c]
         # msg = torch.bmm(edge_data.unsqueeze(1),
@@ -48,7 +55,7 @@ class CompGCNCov(nn.Module):
         # NOTE: first half edges are all in-directions, last half edges are out-directions.
         msg = torch.cat([torch.matmul(edge_data[:edge_num // 2, :], self.in_w),
                          torch.matmul(edge_data[edge_num // 2:, :], self.out_w)])
-        msg = msg * edges.data['norm'].reshape(-1, 1) * edge_weight.reshape(-1, 1)  
+        msg = msg * edges.data['norm'].reshape(-1, 1)# * edge_weight.reshape(-1, 1)
         # [E, D] * [E, 1] * [E, 1]
         return {'msg': msg}
 

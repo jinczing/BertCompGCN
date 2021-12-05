@@ -65,7 +65,7 @@ class CompGCN(nn.Module):
 
 class CompGCN_W(nn.Module):
     def __init__(self, num_ent, num_rel, num_base, init_dim, gcn_dim, embed_dim, n_layer, edge_type, edge_norm, 
-                 edge_weight, conv_bias=True, gcn_drop=0., opn='mult', word_features=None, m=None, doc_num=None):
+                 edge_weight, conv_bias=True, gcn_drop=0., opn='mult', word_features=None, doc_features=None, m=None, doc_num=None):
         super(CompGCN_W, self).__init__()
         self.act = torch.tanh
         self.loss = nn.BCELoss()
@@ -80,7 +80,7 @@ class CompGCN_W(nn.Module):
         self.n_layer = n_layer
         self.doc_num = doc_num
 
-        # self.init_embed = self.get_param([self.num_ent, self.init_dim])  # initial embedding for entities
+        self.init_embed = self.get_param([self.num_ent, self.init_dim])  # initial embedding for entities
         if self.num_base > 0:
             # linear combination of a set of basis vectors
             self.init_rel = self.get_param([self.num_base, self.init_dim])
@@ -95,7 +95,8 @@ class CompGCN_W(nn.Module):
         self.bias = nn.Parameter(torch.zeros(self.doc_num))
 
         self.m = m
-        self.word_features = word_features
+        self.word_features = nn.Parameter(word_features)
+        self.doc_features = nn.Parameter(doc_features)
         self.word_num = word_features.size(0)
 
     def get_param(self, shape):
@@ -119,6 +120,7 @@ class CompGCN_W(nn.Module):
         """
         # x, r = nf, rf  # embedding of relations
         # print(self.word_features.shape, nf.shape)
+        # torch.cat([self.word_features, nf], dim=0) torch.cat([self.word_features, self.doc_features])
         x, r = torch.cat([self.word_features, nf], dim=0), self.init_rel  # embedding of relations
         x, r = self.conv1(g, x, r, self.edge_type, self.edge_norm, self.edge_weight)
         x = drop1(x)  # embeddings of entities [num_ent, dim]
@@ -240,7 +242,7 @@ class CompGCN_ConvE(CompGCN):
 class CompGCN_ConvE_W(CompGCN_W):
     def __init__(self, num_ent, num_rel, num_base, init_dim, gcn_dim, embed_dim, n_layer, edge_type, edge_norm, edge_weight,
                  bias=True, gcn_drop=0., opn='mult', hid_drop=0., input_drop=0., conve_hid_drop=0., feat_drop=0.,
-                 num_filt=None, ker_sz=None, k_h=None, k_w=None, word_features=None, m=None, doc_num=None):
+                 num_filt=None, ker_sz=None, k_h=None, k_w=None, word_features=None, doc_features=None, m=None, doc_num=None):
         """
         :param num_ent: number of entities
         :param num_rel: number of different relations
@@ -263,7 +265,7 @@ class CompGCN_ConvE_W(CompGCN_W):
         :param k_w: width of 2D reshape
         """
         super(CompGCN_ConvE_W, self).__init__(num_ent, num_rel, num_base, init_dim, gcn_dim, embed_dim, n_layer,
-                                            edge_type, edge_norm, edge_weight, bias, gcn_drop, opn, word_features=word_features, m=0.7, doc_num=doc_num)
+                                            edge_type, edge_norm, edge_weight, bias, gcn_drop, opn, word_features=word_features, doc_features=doc_features, m=0.7, doc_num=doc_num)
         self.hid_drop, self.input_drop, self.conve_hid_drop, self.feat_drop = hid_drop, input_drop, conve_hid_drop, feat_drop
         self.num_filt = num_filt
         self.ker_sz, self.k_w, self.k_h = ker_sz, k_w, k_h
@@ -409,9 +411,9 @@ class CompGCN_ConvE_W(CompGCN_W):
         x += self.bias.expand_as(x)
         gcn_score = torch.sigmoid(x)
 
-        bert_score = self.bert_predictor(nf, rf, subj)
-        
-        score = gcn_score*self.m + bert_score*(1-self.m)
+        # bert_score = self.bert_predictor(nf, rf, subj)
+
+        score = gcn_score#*self.m + bert_score*(1-self.m)
         return score
 
 
