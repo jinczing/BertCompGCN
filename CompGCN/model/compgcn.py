@@ -374,6 +374,8 @@ class CompGCN_ConvE_W(CompGCN_W):
 
         self.bert_predictor = BertPredictorDiff(self.init_dim)
 
+        self.predictor = torch.nn.Linear(2*self.embed_dim+3, 1)
+
 
     def concat(self, ent_embed, rel_embed):
         """
@@ -388,7 +390,7 @@ class CompGCN_ConvE_W(CompGCN_W):
         stack_input = stack_input.reshape(-1, 1, 2 * self.k_h, self.k_w)  # reshape to 2D [batch, 1, 2*k_h, k_w]
         return stack_input
 
-    def forward(self, nf, g, subj, rel, rf):
+    def forward(self, nf, g, subj, rel, obj, rf):
         """
         # :param g: dgl graph
         :param sub: subject in batch [batch_size]
@@ -396,6 +398,17 @@ class CompGCN_ConvE_W(CompGCN_W):
         :return: score: [batch_size, ent_num], the prob in link-prediction
         """
         sub_emb, rel_emb, all_ent = self.forward_base(nf, g, subj, rel, self.drop, self.input_drop)
+        
+        obj_emb = torch.index_select(all_ent, index=obj)
+
+        x = torch.cat([sub_emb, obj_emb, rf], dim=-1)
+        x = self.predictor(x)
+        score = torch.sigmoid(x)
+
+        return score
+
+
+        
         stack_input = self.concat(sub_emb, rel_emb)  # [batch_size, 1, 2*k_h, k_w]
         x = self.bn0(stack_input)
         x = stack_input

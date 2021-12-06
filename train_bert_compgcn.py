@@ -31,7 +31,7 @@ from opencc import OpenCC
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--max_length', type=int, default=128, help='the input length for bert')
-parser.add_argument('--batch_size', type=int, default=64)
+parser.add_argument('--batch_size', type=int, default=4)
 parser.add_argument('-m', '--m', type=float, default=0.7, help='the factor balancing BERT and GCN prediction')
 parser.add_argument('--nb_epochs', type=int, default=50)
 parser.add_argument('--bert_init', type=str, default='hfl/chinese-macbert-base',
@@ -185,7 +185,7 @@ for a_id, article in enumerate(tqdm.tqdm(all_articles)):
 for i, doc in enumerate(docs):
     for j, sec in enumerate(doc):
         for k , sent in enumerate(sec):
-            inputs = tokenizer(t2s(sent), max_length=args.max_length, truncation=True, return_tensors='pt') # padding='max_length'
+            inputs = tokenizer(t2s(sent), max_length=args.max_length, padding='max_length', truncation=True, return_tensors='pt') # padding='max_length'
             docs[i][j][k] = inputs
 
 logger.info('loaded docs')
@@ -199,75 +199,75 @@ nb_edge = len(edge_type)
 doc_embeds_g = None
 def update_feature():
     global bert_model, model, g, doc_mask, doc_embeds_g, docs
-    # bert_model.eval()
-    # doc_l = []
-    # sents = []
-    # for doc in docs:
-    #     l = 0
-    #     for sec in doc:
-    #         for sent in sec:
-    #             sents.append(sent['input_ids'].to(device))
-    #         l += len(sec)
-    #     doc_l.append(l)
-    # sents = torch.cat(sents, dim=0)
-    # bs = 512
-    # outputs = []
-    # with torch.no_grad():
-    #     for i in tqdm.tqdm(range(sents.size(0)//bs+1)):
-    #         output = list(
-    #             bert_model(
-    #                 sents[i*bs:(i+1)*bs],
-    #                 attention_mask=None,
-    #                 token_type_ids=None,
-    #                 position_ids=None,
-    #                 head_mask=None,
-    #                 inputs_embeds=None,
-    #                 output_hidden_states=False,
-    #                 return_dict=False,
-    #             )
-    #         )[0]
-    #         outputs.append(output)
-    #     outputs = torch.cat(outputs, dim=0)
-    #     cum = 0
-    #     ds = []
-    #     for i, l in enumerate(doc_l):
-    #         ds.append(outputs[cum:cum+l].mean(1).mean(0).unsqueeze(0))
-    #         cum += l
-    #     doc_embeds_g = torch.cat(ds, dim=0).clone()
-    #     print(doc_embeds_g.max(), doc_embeds_g.min())
-
-    bert_model.eval()
+    bert_model.train()
+    doc_l = []
+    sents = []
+    for doc in docs:
+        l = 0
+        for sec in doc:
+            for sent in sec:
+                sents.append(sent['input_ids'].to(device))
+            l += len(sec)
+        doc_l.append(l)
+    sents = torch.cat(sents, dim=0)
+    bs = 512
+    outputs = []
     with torch.no_grad():
-        doc_embeds = []
-        for doc in tqdm.tqdm(docs):
-            doc_embed = None
-            for sec in doc:
-                sec_embed = None
-                for sent in sec:
-                    output = list(
-                        bert_model(
-                            sent['input_ids'].to(device),
-                            # attention_mask=sent['attention_mask'].to(device),
-                            token_type_ids=None,
-                            position_ids=None,
-                            head_mask=None,
-                            inputs_embeds=None,
-                            output_hidden_states=False,
-                            return_dict=False,
-                        )
-                    )[0].squeeze(0)
-                    if sec_embed is None:
-                        sec_embed = output.mean(0)
-                    else:
-                        sec_embed += output.mean(0)
-                sec_embed /= len(sec)
-                if doc_embed is None:
-                    doc_embed = sec_embed
-                else:
-                    doc_embed += sec_embed
-            doc_embed /= len(doc)
-            doc_embeds.append(doc_embed.unsqueeze(0))
-        doc_embeds_g = torch.cat(doc_embeds, dim=0)
+        for i in tqdm.tqdm(range(sents.size(0)//bs+1)):
+            output = list(
+                bert_model(
+                    sents[i*bs:(i+1)*bs],
+                    attention_mask=None,
+                    token_type_ids=None,
+                    position_ids=None,
+                    head_mask=None,
+                    inputs_embeds=None,
+                    output_hidden_states=False,
+                    return_dict=False,
+                )
+            )[0]
+            outputs.append(output)
+        outputs = torch.cat(outputs, dim=0)
+        cum = 0
+        ds = []
+        for i, l in enumerate(doc_l):
+            ds.append(outputs[cum:cum+l].mean(1).mean(0).unsqueeze(0))
+            cum += l
+        doc_embeds_g = torch.cat(ds, dim=0).clone()
+        print(doc_embeds_g.max(), doc_embeds_g.min())
+
+    # bert_model.eval()
+    # with torch.no_grad():
+    #     doc_embeds = []
+    #     for doc in tqdm.tqdm(docs):
+    #         doc_embed = None
+    #         for sec in doc:
+    #             sec_embed = None
+    #             for sent in sec:
+    #                 output = list(
+    #                     bert_model(
+    #                         sent['input_ids'].to(device),
+    #                         # attention_mask=sent['attention_mask'].to(device),
+    #                         token_type_ids=None,
+    #                         position_ids=None,
+    #                         head_mask=None,
+    #                         inputs_embeds=None,
+    #                         output_hidden_states=False,
+    #                         return_dict=False,
+    #                     )
+    #                 )[0].squeeze(0)
+    #                 if sec_embed is None:
+    #                     sec_embed = output.mean(0)
+    #                 else:
+    #                     sec_embed += output.mean(0)
+    #             sec_embed /= len(sec)
+    #             if doc_embed is None:
+    #                 doc_embed = sec_embed
+    #             else:
+    #                 doc_embed += sec_embed
+    #         doc_embed /= len(doc)
+    #         doc_embeds.append(doc_embed.unsqueeze(0))
+    #     doc_embeds_g = torch.cat(doc_embeds, dim=0)
 if not os.path.exists(args.init_embed_cache):
     update_feature()
     with open(args.init_embed_cache, 'wb') as f:
@@ -313,44 +313,66 @@ else:
     val_pos_ids = pos_ids[int(pos_ids.size(0)*args.train_val_ratio):]
     print(g.edges()[0][pos_ids].max(), g.edges()[1][pos_ids].max(), word_num)
 
-    s2o_train = ddict(set)
+    s2o_all = set()
     for id in train_pos_ids:
         subj, obj = g.edges()[0][id]-word_num, g.edges()[1][id]-word_num
-        rel = gt_edge_id
-        s2o_train[(subj.item(), rel)].add(obj.item())
-    for (subj, rel), obj in s2o_train.items():
-        triplets['train_pos'].append({'triple': (subj, rel, -1), 'label': list(obj)})
-    s2o_val = ddict(set)
+        s2o_all.add((subj, obj))
+        triplets['train_pos'].append((subj, obj, 1))
     for id in val_pos_ids:
         subj, obj = g.edges()[0][id]-word_num, g.edges()[1][id]-word_num
-        rel = gt_edge_id
-        s2o_val[(subj.item(), rel)].add(obj.item())
-    for (subj, rel), obj in s2o_val.items():
-        triplets['val_pos'].append({'triple': (subj, rel, -1), 'label': list(obj)})
+        s2o_all.add((subj, obj))
+        triplets['val_pos'].append((subj, obj, 1))
+    
+    # s2o_train = ddict(set)
+    # for id in train_pos_ids:
+    #     subj, obj = g.edges()[0][id]-word_num, g.edges()[1][id]-word_num
+    #     rel = gt_edge_id
+    #     s2o_train[(subj.item(), rel)].add(obj.item())
+    # for (subj, rel), obj in s2o_train.items():
+    #     triplets['train_pos'].append({'triple': (subj, rel, -1), 'label': list(obj)})
+    # s2o_val = ddict(set)
+    # for id in val_pos_ids:
+    #     subj, obj = g.edges()[0][id]-word_num, g.edges()[1][id]-word_num
+    #     rel = gt_edge_id
+    #     s2o_val[(subj.item(), rel)].add(obj.item())
+    # for (subj, rel), obj in s2o_val.items():
+    #     triplets['val_pos'].append({'triple': (subj, rel, -1), 'label': list(obj)})
 
     logger.info('loaded pos triplets')
 
-    # negative train and val
-    s2o_all = ddict(set)
-    for id in pos_ids:
-        subj, obj = g.edges()[0][id]-word_num, g.edges()[1][id]-word_num
-        rel = gt_edge_id
-        s2o_all[(subj.item(), rel)].add(obj.item())
     all_ids = combinations(g.nodes()[doc_mask]-word_num, 2)
-    neg_all = ddict(set)
-    for i, (subj, obj) in enumerate(all_ids):
-        if len(s2o_all[(subj.item(), gt_edge_id)]) == 0 and subj.item()!=obj.item():
-            neg_all[(subj.item(), gt_edge_id)].add(obj.item())
+    neg_ids = []
+    for subj, obj in all_ids:
+        if (subj.item(), obj.item()) is not in s2o_all and subj.item()!=obj.item():
+            neg_ids.append((subj.item(), obj.item()))
 
-    for i, ((subj, rel), obj) in enumerate(neg_all.items()):
-        if i < int(len(neg_all.items())*args.train_val_ratio):
-            triplets['train_neg'].append({'triple': (subj, gt_edge_id, -1), 'label': []})
+    for i, (subj, obj) in enumerate(neg_ids):
+        if i < int(len(neg_ids))*args.train_val_ratio:
+            triplets['train_neg'].append((subj, obj, 0))
         else:
-            triplets['val_neg'].append({'triple': (subj, gt_edge_id, -1), 'label': []})
+            triplets['val_neg'].append((subj, obj, 0))
 
-    # test # todo: correct test indices
-    for subj, obj in combinations(g.nodes()[test_mask], 2):
-        triplets['test'].append({'triple': (subj, rel, []), 'label': []})
+    # negative train and val
+    # s2o_all = ddict(set)
+    # for id in pos_ids:
+    #     subj, obj = g.edges()[0][id]-word_num, g.edges()[1][id]-word_num
+    #     rel = gt_edge_id
+    #     s2o_all[(subj.item(), rel)].add(obj.item())
+    # all_ids = combinations(g.nodes()[doc_mask]-word_num, 2)
+    # neg_all = ddict(set)
+    # for i, (subj, obj) in enumerate(all_ids):
+    #     if len(s2o_all[(subj.item(), gt_edge_id)]) == 0 and subj.item()!=obj.item():
+    #         neg_all[(subj.item(), gt_edge_id)].add(obj.item())
+
+    # for i, ((subj, rel), obj) in enumerate(neg_all.items()):
+    #     if i < int(len(neg_all.items())*args.train_val_ratio):
+    #         triplets['train_neg'].append({'triple': (subj, gt_edge_id, -1), 'label': []})
+    #     else:
+    #         triplets['val_neg'].append({'triple': (subj, gt_edge_id, -1), 'label': []})
+
+    # # test # todo: correct test indices
+    # for subj, obj in combinations(g.nodes()[test_mask], 2):
+    #     triplets['test'].append({'triple': (subj, rel, []), 'label': []})
 
     with open(args.triplet_cache, 'wb') as f:
         pickle.dump(triplets, f)
@@ -388,7 +410,8 @@ test_data_iter = {
                 batch_size=args.batch_size,
                 num_workers=args.num_workers,
                 sampler=TestBinarySampler(len(triplets['train_pos']),
-                                      len(triplets['train_neg']))
+                                      len(triplets['train_neg'])),
+                drop_last=True,
             ),
             'val': DataLoader(
                 TestBinaryDataset(triplets['val_pos'], triplets['val_neg'], 
@@ -396,7 +419,8 @@ test_data_iter = {
                 batch_size=args.batch_size,
                 num_workers=args.num_workers,
                 sampler=TestBinarySampler(len(triplets['val_pos']),
-                                      len(triplets['val_neg']))
+                                      len(triplets['val_neg'])),
+                drop_last=True,
             ),
         }
 
@@ -469,14 +493,16 @@ class F1_Loss(torch.nn.Module):
 
 f1_loss = F1_Loss().to(device)
 
-def compute_doc_embeds(subj, docs, nf):
+def compute_doc_embeds(subjs, objs, docs, nf):
     global bert_model
     bert_model.train()
+
+    ents = torch.cat([subjs, objs], dim=0)
 
     sents = []
     # attens = []
     doc_l = []
-    for s in subj:
+    for s in ents:
         l = 0
         for sec in docs[s]:
             for sent in sec:
@@ -499,7 +525,7 @@ def compute_doc_embeds(subj, docs, nf):
         )
     )[0]
     cum = 0
-    for i, s in enumerate(subj):
+    for i, s in enumerate(ents):
         nf[s] = outputs[cum:cum+doc_l[i]].mean(1).mean(0)
         cum += doc_l[i]
 
@@ -539,26 +565,29 @@ def train_step(engine, batch):
     
     model.train()
     optimizer.zero_grad()
-    (triplets, labels, hards) = batch
-    triplets, labels, hards = triplets.to(device), labels.to(device), hards.to(device)
-    subj, rel = triplets[:, 0], triplets[:, 1]
 
-    # nf = compute_doc_embeds(subj, docs, doc_embeds_g.clone()).float()
-    nf = doc_embeds_g.clone().float()
-    # print(doc_embeds_g.max(), doc_embeds_g.min())
-    rf = rfs[subj, ...].float() # [subj, num_ent, 4]
 
-    preds = model(nf, g, subj, rel, rf)  # [batch_size, num_ent]
-    # print(preds.shape, preds.max(), preds.min())
+    # (triplets, labels, hards) = batch
+    # triplets, labels, hards = triplets.to(device), labels.to(device), hards.to(device)
+    # subj, rel = triplets[:, 0], triplets[:, 1]
+    (subjs, objs, labels) = batch
+    subjs, objs, labels = subjs.to(device), objs.to(device), labels.to(device)
+
+    nf = compute_doc_embeds(subjs, objs, docs, doc_embeds_g.clone()).float()
+    rf = rfs[subjs, objs].float() # [subj, 3]
+
+    # preds = model(nf, g, subj, rel, rf)  # [batch_size, num_ent]
+    preds = model(nf, g, subjs, objs, rf)
+
     loss = model.calc_loss(preds.flatten(), labels.flatten())
     
     loss.backward()
     optimizer.step()
 
-    f1_score = f1_loss(preds.flatten(), hards.flatten().long()).item()
-    f1_score_hard = f1_loss(preds.flatten().round(), hards.flatten().long()).item()
+    f1_score = f1_loss(preds.flatten(), labels.flatten().long()).item()
+    f1_score_hard = f1_loss(preds.flatten().round(), labels.flatten().long()).item()
     # if iteration%10 == 0:
-    print('{:.4f} {:.4f} {:.4f} {:.4f} {:.4f}'.format(loss.item(), f1_score, f1_score_hard, preds.round().sum().item(), hards.sum().item()))
+    print('{:.4f} {:.4f} {:.4f} {:.4f} {:.4f}'.format(loss.item(), f1_score, f1_score_hard, preds.round().sum().item(), labels.sum().item()))
 
     iteration += 1
     
@@ -571,7 +600,7 @@ trainer = Engine(train_step)
 @trainer.on(Events.EPOCH_COMPLETED)
 def reset_graph(trainer):
     scheduler.step()
-    # update_feature()
+    update_feature()
     th.cuda.empty_cache()
     global iteration
     iteration = 0
@@ -579,14 +608,19 @@ def reset_graph(trainer):
 def test_step(engine, batch):
     global bert_model, model, g, doc_embeds_g, rfs, device
     with th.no_grad():
-        # model.eval()
+        model.train()
 
-        (triplets, labels, hards) = batch
-        triplets, labels, hards = triplets.to(device), labels.to(device), hards.to(device)
-        subj, rel = triplets[:, 0], triplets[:, 1]
+        # (triplets, labels, hards) = batch
+        # triplets, labels, hards = triplets.to(device), labels.to(device), hards.to(device)
+        # subj, rel = triplets[:, 0], triplets[:, 1]
+        (subjs, objs, labels) = batch
+        subjs, objs, labels = subjs.to(device), objs.to(device), labels.to(device)
+
         nf = doc_embeds_g.clone().float()
-        rf = rfs[subj, ...].float()
-        preds = model(nf, g, subj, rel, rf)  # [batch_size, num_ent]
+        rf = rfs[subjs, objs].float()
+        # preds = model(nf, g, subj, rel, rf)  # [batch_size, num_ent]
+        preds = model(nf, g, subjs, objs, rf)
+
         # print(preds.round().sum(), hards.sum(dim=-1))
         # p = []
         # for pred in preds.flatten():
@@ -598,7 +632,7 @@ def test_step(engine, batch):
         # print(list(preds), list(hards))
         # print((preds>0.5).sum(), hards.sum())
 
-        return preds.flatten().round().long(), hards.flatten().long()
+        return preds.flatten().round().long(), labels.flatten().long()
 
 
 evaluator = Engine(test_step)
