@@ -31,12 +31,12 @@ from opencc import OpenCC
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--max_length', type=int, default=128, help='the input length for bert')
-parser.add_argument('--batch_size', type=int, default=4)
+parser.add_argument('--batch_size', type=int, default=2)
 parser.add_argument('-m', '--m', type=float, default=0.7, help='the factor balancing BERT and GCN prediction')
 parser.add_argument('--nb_epochs', type=int, default=50)
 parser.add_argument('--bert_init', type=str, default='hfl/chinese-macbert-base',
                     choices=['hfl/chinese-macbert-base', 'roberta-base', 'roberta-large', 'bert-base-uncased', 'bert-large-uncased'])
-parser.add_argument('--pretrained_bert_ckpt', default='./epoch=27.ckpt')
+parser.add_argument('--pretrained_bert_ckpt', default='./epoch=34.ckpt')
 parser.add_argument('--graph_cache', type=str, default='./graph')
 parser.add_argument('--triplet_cache', type=str, default='./triplet')
 parser.add_argument('--init_embed_cache', type=str, default='./init_embed')
@@ -317,11 +317,11 @@ else:
     for id in train_pos_ids:
         subj, obj = g.edges()[0][id]-word_num, g.edges()[1][id]-word_num
         s2o_all.add((subj, obj))
-        triplets['train_pos'].append((subj, obj, 1))
+        triplets['train_pos'].append((subj.item(), obj.item(), 1))
     for id in val_pos_ids:
         subj, obj = g.edges()[0][id]-word_num, g.edges()[1][id]-word_num
         s2o_all.add((subj, obj))
-        triplets['val_pos'].append((subj, obj, 1))
+        triplets['val_pos'].append((subj.item(), obj.item(), 1))
     
     # s2o_train = ddict(set)
     # for id in train_pos_ids:
@@ -343,7 +343,7 @@ else:
     all_ids = combinations(g.nodes()[doc_mask]-word_num, 2)
     neg_ids = []
     for subj, obj in all_ids:
-        if (subj.item(), obj.item()) is not in s2o_all and subj.item()!=obj.item():
+        if (subj.item(), obj.item()) not in s2o_all and subj.item()!=obj.item():
             neg_ids.append((subj.item(), obj.item()))
 
     for i, (subj, obj) in enumerate(neg_ids):
@@ -572,22 +572,23 @@ def train_step(engine, batch):
     # subj, rel = triplets[:, 0], triplets[:, 1]
     (subjs, objs, labels) = batch
     subjs, objs, labels = subjs.to(device), objs.to(device), labels.to(device)
+    rels = torch.zeros_like(subjs).long().to(device)
 
     nf = compute_doc_embeds(subjs, objs, docs, doc_embeds_g.clone()).float()
     rf = rfs[subjs, objs].float() # [subj, 3]
 
     # preds = model(nf, g, subj, rel, rf)  # [batch_size, num_ent]
-    preds = model(nf, g, subjs, objs, rf)
+    preds = model(nf, g, subjs, rels, objs, rf)
 
-    loss = model.calc_loss(preds.flatten(), labels.flatten())
+    loss = model.calc_loss(preds.flatten(), labels.flatten().float())
     
     loss.backward()
     optimizer.step()
 
     f1_score = f1_loss(preds.flatten(), labels.flatten().long()).item()
     f1_score_hard = f1_loss(preds.flatten().round(), labels.flatten().long()).item()
-    # if iteration%10 == 0:
-    print('{:.4f} {:.4f} {:.4f} {:.4f} {:.4f}'.format(loss.item(), f1_score, f1_score_hard, preds.round().sum().item(), labels.sum().item()))
+    if iteration%10 == 0:
+        print('{:.4f} {:.4f} {:.4f} {:.4f} {:.4f}'.format(loss.item(), f1_score, f1_score_hard, preds.round().sum().item(), labels.sum().item()))
 
     iteration += 1
     
@@ -615,11 +616,12 @@ def test_step(engine, batch):
         # subj, rel = triplets[:, 0], triplets[:, 1]
         (subjs, objs, labels) = batch
         subjs, objs, labels = subjs.to(device), objs.to(device), labels.to(device)
+        rels = torch.zeros_like(subjs).long().to(device)
 
         nf = doc_embeds_g.clone().float()
         rf = rfs[subjs, objs].float()
         # preds = model(nf, g, subj, rel, rf)  # [batch_size, num_ent]
-        preds = model(nf, g, subjs, objs, rf)
+        preds = model(nf, g, subjs, rels, objs, rf)
 
         # print(preds.round().sum(), hards.sum(dim=-1))
         # p = []

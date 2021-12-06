@@ -399,7 +399,7 @@ class CompGCN_ConvE_W(CompGCN_W):
         """
         sub_emb, rel_emb, all_ent = self.forward_base(nf, g, subj, rel, self.drop, self.input_drop)
         
-        obj_emb = torch.index_select(all_ent, index=obj)
+        obj_emb = torch.index_select(all_ent, index=obj, dim=0)
 
         x = torch.cat([sub_emb, obj_emb, rf], dim=-1)
         x = self.predictor(x)
