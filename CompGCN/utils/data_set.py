@@ -2,6 +2,8 @@ from torch.utils.data import Dataset
 import numpy as np
 import torch
 from torch.utils.data.sampler import Sampler
+import random
+from ordered_set import OrderedSet
 
 class TrainDataset(Dataset):
     def __init__(self, triplets, num_ent, params):
@@ -56,7 +58,7 @@ class TrainBinaryDataset(Dataset):
         # return triple, label, hard_label
 
         subj, obj, label = torch.tensor(ele[0]), torch.tensor(ele[1]), torch.tensor(ele[2])
-        return subj, obj, label
+        return subj, obj, label, item
 
     def get_label(self, label):
         """
@@ -70,10 +72,11 @@ class TrainBinaryDataset(Dataset):
 
 class BinarySampler(Sampler):
 
-    def __init__(self, pos_num, neg_num, length_before_new_iter=500):
+    def __init__(self, pos_num, neg_num, asym_num=None, hards=None, length_before_new_iter=50000):
         super(BinarySampler, self).__init__([])
         self.pos_num = pos_num
         self.neg_num = neg_num
+        self.hards = hards
         self.length_before_new_iter = length_before_new_iter
 
     def __len__(self):
@@ -84,12 +87,36 @@ class BinarySampler(Sampler):
         # for i in range(self.length_before_new_iter):
         #     l.append(np.random.randint(self.pos_num+self.neg_num))
         # print(self.pos_num, self.neg_num, flush=True)
-        for i in range(self.length_before_new_iter):
-            ran = np.random.randint(2)
-            if ran:
-                l.append(np.random.randint(self.pos_num))
+        p = np.ones((self.pos_num+self.neg_num))
+        p[self.hards] *= 10
+        p /= p.sum()
+        # for i in range(self.length_before_new_iter):
+            # if self.hards is not None and np.random.randint(10)==0 and len(self.hards):
+            #     l.append(self.hards[np.random.randint(len(self.hards))])
+            # else:
+
+            # ran = np.random.randint(self.pos_num+self.neg_num)
+        l = np.random.choice(self.pos_num+self.neg_num, (self.length_before_new_iter)//2, p=p).tolist()
+        ll = []
+        for i in l:
+            if i%2==0:
+                ll.append(i)
+                ll.append(i+1)
             else:
-                l.append(self.pos_num+np.random.randint(self.neg_num))
+                ll.append(i)
+                ll.append(i-1)
+        
+        # if ran<self.pos_num:
+        # if ran%2 == 0:
+        #     l.append(ran+1)
+        # else:
+        #     l.append(ran-1)
+
+            # ran = np.random.randint(2)
+            # if not ran:
+            #     l.append(np.random.randint(self.pos_num))
+            # else:
+            #     l.append(self.pos_num+np.random.randint(self.neg_num))
         return iter(l)
 
 class TestBinarySampler(Sampler):
@@ -105,8 +132,16 @@ class TestBinarySampler(Sampler):
 
     def __iter__(self):
         l = []
-        for i in range(self.pos_num+self.neg_num):
+        for i in range((self.pos_num+self.neg_num)//2):
             l.append(i)
+        random.shuffle(l)
+        l = OrderedSet(l)
+        ll = []
+        while(len(l)):
+            t = l.pop()
+            ll.append(t*2)
+            ll.append(t*2+1)
+
         # for i in range(self.length_before_new_iter):
         #     l.append(np.random.randint(self.pos_num))
         # print(self.pos_num, self.neg_num, flush=True)
@@ -115,7 +150,7 @@ class TestBinarySampler(Sampler):
             #     l.append(np.random.randint(self.pos_num))
             # else:
             #     l.append(self.pos_num+np.random.randint(self.neg_num))
-        return iter(l)
+        return iter(ll)
 
 class TestDataset(Dataset):
     def __init__(self, triplets, num_ent, params):
@@ -161,7 +196,7 @@ class TestBinaryDataset(Dataset):
         # return triple, label, hard_label
 
         subj, obj, label = torch.tensor(ele[0]), torch.tensor(ele[1]), torch.tensor(ele[2])
-        return subj, obj, label
+        return subj, obj, label, item
 
     def get_label(self, label):
         """

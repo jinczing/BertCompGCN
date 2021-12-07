@@ -101,7 +101,7 @@ class CompGCNCov(nn.Module):
         g.ndata['h'] = x
         g.edata['type'] = edge_type
         g.edata['norm'] = edge_norm
-        g.edata['weight'] = edge_weight
+        # g.edata['weight'] = edge_weight
         if self.rel_wt is None:
             self.rel = rel_repr
         else:

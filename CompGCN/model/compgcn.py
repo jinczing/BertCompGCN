@@ -3,6 +3,42 @@ from torch import nn
 import dgl
 from CompGCN.model.layer import CompGCNCov
 import torch.nn.functional as F
+from torch.autograd import Variable
+
+class FocalLoss(nn.Module):
+    def __init__(self, gamma=5, alpha=0.2, size_average=False):
+        super(FocalLoss, self).__init__()
+        self.gamma = gamma
+        self.alpha = alpha
+        if isinstance(alpha,(float,int)): self.alpha = torch.Tensor([alpha,1-alpha])
+        if isinstance(alpha,list): self.alpha = torch.Tensor(alpha)
+        self.size_average = size_average
+
+    def forward(self, input, target, sym):
+        if input.dim()>2:
+            input = input.view(input.size(0),input.size(1),-1)
+            input = input.transpose(1,2)
+            input = input.contiguous().view(-1,input.size(2))
+        target = target.view(-1,1)
+
+        logpt = F.log_softmax(input)
+        logpt = logpt.gather(1,target)
+        logpt = logpt.view(-1)
+        pt = Variable(logpt.data.exp())
+
+        if self.alpha is not None:
+            if self.alpha.type()!=input.data.type():
+                self.alpha = self.alpha.type_as(input.data)
+            select = (target!=0).type(torch.LongTensor).cuda()
+            at = self.alpha.gather(0,select.data.view(-1))
+            logpt = logpt * Variable(at)
+
+        # sym = sym*5
+        # sym[sym==0] = 1
+
+        loss = -1 * (1-pt)**self.gamma * logpt
+        if self.size_average: return loss.mean()
+        else: return loss.sum()
 
 
 class CompGCN(nn.Module):
@@ -10,7 +46,8 @@ class CompGCN(nn.Module):
                  conv_bias=True, gcn_drop=0., opn='mult'):
         super(CompGCN, self).__init__()
         self.act = torch.tanh
-        self.loss = nn.BCELoss()
+        # self.loss = nn.BCELoss()
+        self.loss = FocalLoss()
         self.num_ent, self.num_rel, self.num_base = num_ent, num_rel, num_base
         self.init_dim, self.gcn_dim, self.embed_dim = init_dim, gcn_dim, embed_dim
         self.conv_bias = conv_bias
@@ -40,6 +77,9 @@ class CompGCN(nn.Module):
         return param
 
     def calc_loss(self, pred, label):
+        label = label.long()
+        pred = pred.unsqueeze(-1).repeat(1, 2)
+        pred[0] = 1-pred[0]
         return self.loss(pred, label)
 
     def forward_base(self, g, subj, rel, drop1, drop2):
@@ -68,7 +108,8 @@ class CompGCN_W(nn.Module):
                  edge_weight, conv_bias=True, gcn_drop=0., opn='mult', word_features=None, doc_features=None, m=None, doc_num=None):
         super(CompGCN_W, self).__init__()
         self.act = torch.tanh
-        self.loss = nn.BCELoss()
+        self.loss = FocalLoss()
+        # self.loss = nn.BCELoss()
         self.num_ent, self.num_rel, self.num_base = num_ent, num_rel, num_base
         self.init_dim, self.gcn_dim, self.embed_dim = init_dim, gcn_dim, embed_dim
         self.conv_bias = conv_bias
@@ -96,15 +137,18 @@ class CompGCN_W(nn.Module):
 
         self.m = m
         # self.word_features = nn.Parameter(word_features)
-        # self.doc_features = nn.Parameter(doc_features)
+        self.doc_features = nn.Parameter(doc_features)
 
     def get_param(self, shape):
         param = nn.Parameter(torch.Tensor(*shape))
         nn.init.xavier_normal_(param, gain=nn.init.calculate_gain('relu'))
         return param
 
-    def calc_loss(self, pred, label):
-        return self.loss(pred, label)
+    def calc_loss(self, pred, label, sym):
+        label = label.long()
+        pred = pred.unsqueeze(-1).repeat(1, 2)
+        pred[:, 0] = 1-pred[:, 0]
+        return self.loss(pred, label, sym)
 
     def forward_base(self, nf, g, subj, rel, drop1=None, drop2=None):
         """
@@ -121,7 +165,7 @@ class CompGCN_W(nn.Module):
         # print(self.word_features.shape, nf.shape)
         # torch.cat([self.word_features, nf], dim=0) torch.cat([self.word_features, self.doc_features])
         device = nf.device # torch.zeros(self.num_ent-self.doc_num, nf.size(-1)).to(device)
-        x, r = nf, self.init_rel  # embedding of relations
+        x, r = self.doc_features, self.init_rel  # embedding of relations
         x, r = self.conv1(g, x, r, self.edge_type, self.edge_norm, self.edge_weight)
         x = drop1(x)  # embeddings of entities [num_ent, dim]
         x, r = self.conv2(g, x, r, self.edge_type, self.edge_norm, self.edge_weight) if self.n_layer == 2 else (x, r)
@@ -278,7 +322,7 @@ class CompGCN_ConvE_W(CompGCN_W):
         self.input_drop = torch.nn.Dropout(self.input_drop)  # stacked input dropout
         self.feature_drop = torch.nn.Dropout(self.feat_drop)  # feature map dropout
         self.hidden_drop = torch.nn.Dropout(self.conve_hid_drop)  # hidden layer dropout
-
+        self.mlp_drop = torch.nn.Dropout(0.2)
         self.conv2d = torch.nn.Conv2d(in_channels=1, out_channels=self.num_filt,
                                       kernel_size=(self.ker_sz, self.ker_sz), stride=1, padding=0, bias=bias)
 
@@ -372,9 +416,16 @@ class CompGCN_ConvE_W(CompGCN_W):
         #          bias, gcn_drop, opn, hid_drop, input_drop, conve_hid_drop, feat_drop,
         #          num_filt, ker_sz, k_h, k_w)
 
-        self.bert_predictor = BertPredictorDiff(self.init_dim)
+        # self.bert_predictor = BertPredictorDiff(self.init_dim)
 
-        self.predictor = torch.nn.Linear(2*self.embed_dim+3, 1)
+        self.rel_mlp = torch.nn.Linear(2*self.embed_dim, self.embed_dim)
+        self.rel_bn = torch.nn.BatchNorm1d(self.embed_dim)
+        # self.diff_bn = torch.nn.BatchNorm1d(self.embed_dim)
+        # self.diff = torch.nn.Linear(self.embed_dim, self.embed_dim)
+        # self.bert_diff = torch.nn.Linear(self.init_dim, self.init_dim)
+        self.relu = torch.nn.ReLU()
+        self.predictor = torch.nn.Linear((6+self.embed_dim+self.init_dim), 1)
+        # self.predictor3 = torch.nn.Linear(2, 1)
 
 
     def concat(self, ent_embed, rel_embed):
@@ -397,13 +448,92 @@ class CompGCN_ConvE_W(CompGCN_W):
         :param rel: relation in batch [batch_size]
         :return: score: [batch_size, ent_num], the prob in link-prediction
         """
+        ent = subj.size(0)
         sub_emb, rel_emb, all_ent = self.forward_base(nf, g, subj, rel, self.drop, self.input_drop)
         
         obj_emb = torch.index_select(all_ent, index=obj, dim=0)
 
-        x = torch.cat([sub_emb, obj_emb, rf], dim=-1)
+        # sub_emb_rel = sub_emb * rel_emb
+        sub_emb = self.relu(torch.cat([sub_emb, rel_emb], dim=-1))
+        sub_emb = self.rel_mlp(sub_emb)
+        sub_emb = self.mlp_drop(sub_emb)
+        sub_emb = self.rel_bn(sub_emb)
+
+        # sub_emb = self.relu(sub_emb)
+        # sub_emb = self.rel_mlp(torch.cat([sub_emb, rel_emb], dim=-1))
+        # sub_emb = self.rel_bn(sub_emb)
+        # obj_emb = self.relu(obj_emb)
+        # obj_emb = self.rel_mlp(torch.cat([obj_emb, rel_emb], dim=-1))
+        # obj_emb = self.rel_bn(obj_emb)
+
+        bert_sub_emb = torch.index_select(nf, index=subj, dim=0)
+        bert_obj_emb = torch.index_select(nf, index=obj, dim=0)
+
+        # x = torch.cat([sub_emb, obj_emb], dim=-1)
+        # x = self.predictor(x)
+        # x = self.relu(x)
+        # sub_emb = sub_emb/torch.norm(sub_emb, dim=-1, keepdim=True)
+        # obj_emb = obj_emb/torch.norm(obj_emb, dim=-1, keepdim=True)
+        # x = torch.bmm(sub_emb.view(ent, 1, -1), obj_emb.view(ent, -1, 1)).squeeze(-1)
+        # print(ent, x.shape, rf.shape)
+        # gcn_score = x.clamp(0) #torch.sigmoid(x)
+        sub_emb = sub_emb/torch.norm(sub_emb, dim=-1, keepdim=True)
+        obj_emb = obj_emb/torch.norm(obj_emb, dim=-1, keepdim=True)
+        x = sub_emb-obj_emb
+        x = x/torch.norm(x, dim=-1, keepdim=True)
+        diff = x
+        # diff = self.diff(x)
+        # diff = diff/torch.norm(diff, dim=-1, keepdim=True)
+        # diff = diff.view(subj.size(0)//2, 2, self.embed_dim)
+        # diff1, diff2 = torch.chunk(diff, 2, dim=1)
+        # diff = torch.bmm(diff1, diff2.permute(0, 2, 1)).squeeze(-1)
+        # diff = self.relu(diff)
+        # diff = self.mlp_drop(diff)
+
+        bert_sub_emb = bert_sub_emb/torch.norm(bert_sub_emb, dim=-1, keepdim=True)
+        bert_obj_emb = bert_obj_emb/torch.norm(bert_obj_emb, dim=-1, keepdim=True)
+        x = bert_sub_emb-bert_obj_emb
+        x = x/torch.norm(x, dim=-1, keepdim=True)
+        bert_diff = x
+        # bert_diff = self.bert_diff(x)
+        # bert_diff = bert_diff/torch.norm(bert_diff, dim=-1, keepdim=True)
+        # bert_diff = bert_diff.view(subj.size(0)//2, 2, self.init_dim)
+        # diff1, diff2 = torch.chunk(bert_diff, 2, dim=1)
+        # bert_diff = torch.bmm(diff1, diff2.permute(0, 2, 1)).squeeze(-1)
+        # bert_diff = self.relu(bert_diff)
+        # bert_diff = self.mlp_drop(bert_diff)
+
+        # x = self.relu(x)
+        zero = torch.zeros_like(diff).to(diff)
+        # x = rf
+        # x = x.view(-1, 2*6)
+        x = torch.cat([rf, bert_diff, diff], dim=-1) # 2*ent x 6
+        # x = x.view(-1, 2*(6+self.embed_dim+self.init_dim)) # ent x 12
+        # x = self.mlp_drop(x)
         x = self.predictor(x)
+        # x = x.view(-1, 1)
+        # x = self.predictor2(rf)
         score = torch.sigmoid(x)
+        
+
+
+        # gcn_score = torch.sigmoid(x)
+        # x = self.predictor2(rf)
+        # bert_score = torch.sigmoid(x)
+        # score = self.predictor3(torch.cat([gcn_score, bert_score], dim=-1))
+        # score = torch.sigmoid(score)
+
+
+
+        # score = torch.sigmoid(x)
+        
+        # score =  gcn_score*self.m + bert_score*(1-self.m)
+        
+        # score = torch.sigmoid(x)
+        # thres_score = torch.zeros_like(score).to(score.device)
+        # thres_score[rf[:, 0]>0.8, 0] = score[rf[:, 0]>0.8, 0]
+        # score = torch.masked_fill((rf[:, 0]<0.5).unsqueeze(-1), 0)
+        # score[rf[:, 0]<0.5, 0] = 0
 
         return score
 

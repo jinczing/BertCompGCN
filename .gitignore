@@ -18,3 +18,8 @@ bert_gcn
 bert_gcn_ind
 bert_sgc
 rel/*
+ckpt/
+graph
+init_embed
+triplet
+

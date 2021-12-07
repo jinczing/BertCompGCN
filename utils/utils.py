@@ -162,7 +162,7 @@ def load_multi_relations_doc(data_paths, logger):
 
 
     # doc to doc relations
-    rfs = np.zeros((doc_num, doc_num, 3))
+    rfs = np.ones((doc_num, doc_num, 6))*-1
 
     # data_dict[('doc', 'sim', 'doc')] = []
     sim_num = 0
@@ -174,10 +174,41 @@ def load_multi_relations_doc(data_paths, logger):
         for id in ids:
             edge_type.append(edge_type_num)
             edge_weight.append(bert_similarity[3][id])
-            rfs[i, bert_similarity[2][id], 0] = bert_similarity[3][id]
+            # rfs[i, bert_similarity[2][id], 0] = bert_similarity[3][id]
         g.add_edges(i, bert_similarity[2][ids])
-    edge_type_num += 1
+
+        # dissimilarity
+        sim_num += ids.shape[0]
+        for id in ids:
+            edge_type.append(edge_type_num+1)
+            target_id = bert_similarity[2][id]
+            # print(target_id, i)
+            if np.where(bert_similarities[target_id][2]==i)[0].shape[0] == 0:
+                edge_weight.append(-1)
+            else:
+                source_id = np.where(bert_similarities[target_id][2]==i)[0][0]
+                b = bert_similarities[target_id][3][source_id]
+                f = bert_similarity[3][id]
+                edge_weight.append(f-b)
+            # rfs[i, bert_similarity[2][id], 0] = f-b
+        g.add_edges(i, bert_similarity[2][ids])
+    edge_type_num += 2
     print('sim', sim_num)
+    
+    for i, bert_similarity in enumerate(bert_similarities):
+        for j, id in enumerate(bert_similarity[2]):
+            rfs[i, id, 0] = bert_similarity[3][j]
+
+            target_id = bert_similarity[2][j]
+            if np.where(bert_similarities[target_id][2]==i)[0].shape[0] != 0:
+                source_id = np.where(bert_similarities[target_id][2]==i)[0][0]
+                b = bert_similarities[target_id][3][source_id]
+                f = bert_similarity[3][j]
+                rfs[i, id, 1] = f-b
+
+    # for i in range(doc_num):
+    #     for j in range(doc_num):
+            
 
     # data_dict[('doc', 'key_inclusion', 'doc')] = []
     # ids = list(np.where(key_inclusions>0.5))
@@ -234,10 +265,16 @@ def load_multi_relations_doc(data_paths, logger):
             if i == id: continue
             edge_type.append(edge_type_num)
             edge_weight.append(key_sim[i][id])
-            rfs[i, id, 1] = key_sim[i][id]
+            # rfs[i, id, 1] = key_sim[i][id]
         ids = ids[ids!=i]
         g.add_edges(i, ids)
     edge_type_num += 1
+
+    key_sim[np.isnan(key_sim)] = 0
+    for i in range(doc_num):
+        for j in range(doc_num):
+            if i==j: continue
+            rfs[i, j, 2] = key_sim[i][j]
 
     ne_num = 0
     for i in range(doc_num):
@@ -247,10 +284,28 @@ def load_multi_relations_doc(data_paths, logger):
             if i == id: continue
             edge_type.append(edge_type_num)
             edge_weight.append(ne_sim[i][id])
-            rfs[i, id, 2] = ne_sim[i][id]
+            # rfs[i, id, 2] = ne_sim[i][id]
         ids = ids[ids!=i]
         g.add_edges(i, ids)
     edge_type_num += 1
+
+    ne_sim[np.isnan(ne_sim)] = 0
+    for i in range(doc_num):
+        for j in range(doc_num):
+            if i==j: continue
+            rfs[i, j, 3] = ne_sim[i][j]
+
+    key_inclusions[np.isnan(key_inclusions)] = 0
+    for i in range(doc_num):
+        for j in range(doc_num):
+            if i==j: continue
+            rfs[i, j, 4] = key_inclusions[i][j]
+
+    ne_inclusions[np.isnan(ne_inclusions)] = 0
+    for i in range(doc_num):
+        for j in range(doc_num):
+            if i==j: continue
+            rfs[i, j, 5] = ne_inclusions[i][j]
 
     print('key ne', key_num, ne_num)
 
