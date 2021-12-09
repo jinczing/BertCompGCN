@@ -72,11 +72,14 @@ class TrainBinaryDataset(Dataset):
 
 class BinarySampler(Sampler):
 
-    def __init__(self, pos_num, neg_num, asym_num=None, hards=None, length_before_new_iter=50000):
+    def __init__(self, pos_num, neg_num, asym_num=None, val_ids=None, hards=None, hards_pos=None, neg=True, length_before_new_iter=50000):
         super(BinarySampler, self).__init__([])
         self.pos_num = pos_num
         self.neg_num = neg_num
         self.hards = hards
+        self.hards_pos = hards_pos
+        self.neg = neg
+        self.val_ids = val_ids
         self.length_before_new_iter = length_before_new_iter
 
     def __len__(self):
@@ -87,8 +90,17 @@ class BinarySampler(Sampler):
         # for i in range(self.length_before_new_iter):
         #     l.append(np.random.randint(self.pos_num+self.neg_num))
         # print(self.pos_num, self.neg_num, flush=True)
+        # print(self.pos_num+self.neg_num, len(self.val_ids))
         p = np.ones((self.pos_num+self.neg_num))
         p[self.hards] *= 10
+        if self.val_ids is not None:
+            print(self.pos_num+self.neg_num, len(self.val_ids))
+            p[self.val_ids] = 0
+        # p[self.hards_pos] *= 2
+        # if self.neg:
+        #     p[self.hards] *= 10
+        # else:
+        #     p[self.hards] *= 2
         p /= p.sum()
         # for i in range(self.length_before_new_iter):
             # if self.hards is not None and np.random.randint(10)==0 and len(self.hards):

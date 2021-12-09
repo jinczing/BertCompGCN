@@ -26,14 +26,15 @@ class CompGCNCov(nn.Module):
 
         self.drop = nn.Dropout(drop_rate)
         self.bn = torch.nn.BatchNorm1d(out_channels)
+        # self.bn = torch.nn.LayerNorm(out_channels)
         self.bias = nn.Parameter(torch.zeros(out_channels)) if bias else None
         if num_base > 0:
             self.rel_wt = self.get_param([num_rel * 2, num_base])
         else:
             self.rel_wt = None
 
-        self.rel_bn = torch.nn.BatchNorm1d(in_channels+1)
-        self.weight_map = nn.Linear(in_channels+1, in_channels)
+        # self.rel_bn = torch.nn.BatchNorm1d(in_channels+1)
+        # self.weight_map = nn.Linear(in_channels+1, in_channels)
 
     def get_param(self, shape):
         param = nn.Parameter(torch.Tensor(*shape))
@@ -43,6 +44,7 @@ class CompGCNCov(nn.Module):
     def message_func(self, edges: dgl.udf.EdgeBatch):
         edge_type = edges.data['type']  # [E, 1]
         edge_weight = edges.data['weight'] # [E, 1]
+        edge_mask = edges.data['gt_mask']
         edge_num = edge_type.shape[0]
         rel = self.rel[edge_type]
         # rel = torch.cat([self.rel[edge_type], edge_weight.unsqueeze(-1)], dim=-1)
@@ -56,8 +58,10 @@ class CompGCNCov(nn.Module):
         # NOTE: first half edges are all in-directions, last half edges are out-directions.
         msg = torch.cat([torch.matmul(edge_data[:edge_num // 2, :], self.in_w),
                          torch.matmul(edge_data[edge_num // 2:, :], self.out_w)])
-        msg = msg * edges.data['norm'].reshape(-1, 1) * edge_weight.reshape(-1, 1)
+        msg = msg * edges.data['norm'].reshape(-1, 1) * edge_weight.reshape(-1, 1)# * edge_mask.reshape(-1, 1) # * edge_weight.reshape(-1, 1)
         # [E, D] * [E, 1] * [E, 1]
+        # msg = self.drop(msg)
+
         return {'msg': msg}
 
     def reduce_func(self, nodes: dgl.udf.NodeBatch):
@@ -96,6 +100,7 @@ class CompGCNCov(nn.Module):
         :return: x: output node features: [V, out_channel]
                  rel: output relation features: [num_rel*2, out_channel]
         """
+        # self.bn.train()
         self.device = x.device
         g = g.local_var()
         g.ndata['h'] = x

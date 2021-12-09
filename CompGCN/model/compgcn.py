@@ -36,7 +36,7 @@ class FocalLoss(nn.Module):
         # sym = sym*5
         # sym[sym==0] = 1
 
-        loss = -1 * (1-pt)**self.gamma * logpt
+        loss = -1 * (1-pt)**self.gamma * logpt# * sym
         if self.size_average: return loss.mean()
         else: return loss.sum()
 
@@ -165,7 +165,7 @@ class CompGCN_W(nn.Module):
         # print(self.word_features.shape, nf.shape)
         # torch.cat([self.word_features, nf], dim=0) torch.cat([self.word_features, self.doc_features])
         device = nf.device # torch.zeros(self.num_ent-self.doc_num, nf.size(-1)).to(device)
-        x, r = self.doc_features, self.init_rel  # embedding of relations
+        x, r = nf, self.init_rel  # embedding of relations
         x, r = self.conv1(g, x, r, self.edge_type, self.edge_norm, self.edge_weight)
         x = drop1(x)  # embeddings of entities [num_ent, dim]
         x, r = self.conv2(g, x, r, self.edge_type, self.edge_norm, self.edge_weight) if self.n_layer == 2 else (x, r)
@@ -323,6 +323,7 @@ class CompGCN_ConvE_W(CompGCN_W):
         self.feature_drop = torch.nn.Dropout(self.feat_drop)  # feature map dropout
         self.hidden_drop = torch.nn.Dropout(self.conve_hid_drop)  # hidden layer dropout
         self.mlp_drop = torch.nn.Dropout(0.2)
+        self.fc_drop = torch.nn.Dropout(0.2)
         self.conv2d = torch.nn.Conv2d(in_channels=1, out_channels=self.num_filt,
                                       kernel_size=(self.ker_sz, self.ker_sz), stride=1, padding=0, bias=bias)
 
@@ -420,9 +421,10 @@ class CompGCN_ConvE_W(CompGCN_W):
 
         self.rel_mlp = torch.nn.Linear(2*self.embed_dim, self.embed_dim)
         self.rel_bn = torch.nn.BatchNorm1d(self.embed_dim)
+        # self.rel_bn = torch.nn.LayerNorm(self.embed_dim)
         # self.diff_bn = torch.nn.BatchNorm1d(self.embed_dim)
-        # self.diff = torch.nn.Linear(self.embed_dim, self.embed_dim)
-        # self.bert_diff = torch.nn.Linear(self.init_dim, self.init_dim)
+        self.diff = torch.nn.Linear(self.embed_dim, 1)
+        self.bert_diff = torch.nn.Linear(self.init_dim, 1)
         self.relu = torch.nn.ReLU()
         self.predictor = torch.nn.Linear((6+self.embed_dim+self.init_dim), 1)
         # self.predictor3 = torch.nn.Linear(2, 1)
@@ -448,16 +450,18 @@ class CompGCN_ConvE_W(CompGCN_W):
         :param rel: relation in batch [batch_size]
         :return: score: [batch_size, ent_num], the prob in link-prediction
         """
+        # self.rel_bn.train()
         ent = subj.size(0)
         sub_emb, rel_emb, all_ent = self.forward_base(nf, g, subj, rel, self.drop, self.input_drop)
         
         obj_emb = torch.index_select(all_ent, index=obj, dim=0)
 
         # sub_emb_rel = sub_emb * rel_emb
-        sub_emb = self.relu(torch.cat([sub_emb, rel_emb], dim=-1))
-        sub_emb = self.rel_mlp(sub_emb)
-        sub_emb = self.mlp_drop(sub_emb)
-        sub_emb = self.rel_bn(sub_emb)
+        # sub_emb = self.relu(torch.cat([sub_emb, rel_emb], dim=-1))
+        # sub_emb = self.rel_mlp(sub_emb)
+        # sub_emb = self.mlp_drop(sub_emb)
+        # sub_emb = self.rel_bn(sub_emb)
+        # sub_emb = sub_emb*rel_emb
 
         # sub_emb = self.relu(sub_emb)
         # sub_emb = self.rel_mlp(torch.cat([sub_emb, rel_emb], dim=-1))
@@ -481,8 +485,9 @@ class CompGCN_ConvE_W(CompGCN_W):
         obj_emb = obj_emb/torch.norm(obj_emb, dim=-1, keepdim=True)
         x = sub_emb-obj_emb
         x = x/torch.norm(x, dim=-1, keepdim=True)
-        diff = x
+        diff = self.mlp_drop(x)
         # diff = self.diff(x)
+        # diff = self.relu(diff)
         # diff = diff/torch.norm(diff, dim=-1, keepdim=True)
         # diff = diff.view(subj.size(0)//2, 2, self.embed_dim)
         # diff1, diff2 = torch.chunk(diff, 2, dim=1)
@@ -494,8 +499,9 @@ class CompGCN_ConvE_W(CompGCN_W):
         bert_obj_emb = bert_obj_emb/torch.norm(bert_obj_emb, dim=-1, keepdim=True)
         x = bert_sub_emb-bert_obj_emb
         x = x/torch.norm(x, dim=-1, keepdim=True)
-        bert_diff = x
+        bert_diff = self.mlp_drop(x)
         # bert_diff = self.bert_diff(x)
+        # bert_diff = self.relu(bert_diff)
         # bert_diff = bert_diff/torch.norm(bert_diff, dim=-1, keepdim=True)
         # bert_diff = bert_diff.view(subj.size(0)//2, 2, self.init_dim)
         # diff1, diff2 = torch.chunk(bert_diff, 2, dim=1)
@@ -504,10 +510,11 @@ class CompGCN_ConvE_W(CompGCN_W):
         # bert_diff = self.mlp_drop(bert_diff)
 
         # x = self.relu(x)
-        zero = torch.zeros_like(diff).to(diff)
+        # zero = torch.zeros_like(diff).to(diff)
         # x = rf
         # x = x.view(-1, 2*6)
-        x = torch.cat([rf, bert_diff, diff], dim=-1) # 2*ent x 6
+        x = torch.cat([rf, diff, bert_diff], dim=-1) # 2*ent x 
+        # x = self.fc_drop(x)
         # x = x.view(-1, 2*(6+self.embed_dim+self.init_dim)) # ent x 12
         # x = self.mlp_drop(x)
         x = self.predictor(x)

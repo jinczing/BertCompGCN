@@ -22,4 +22,4 @@ ckpt/
 graph
 init_embed
 triplet
-
+*.csv

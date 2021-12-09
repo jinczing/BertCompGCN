@@ -34,7 +34,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--max_length', type=int, default=128, help='the input length for bert')
 parser.add_argument('--batch_size', type=int, default=64)
 parser.add_argument('-m', '--m', type=float, default=0.7, help='the factor balancing BERT and GCN prediction')
-parser.add_argument('--nb_epochs', type=int, default=200)
+parser.add_argument('--nb_epochs', type=int, default=300)
 parser.add_argument('--bert_init', type=str, default='hfl/chinese-macbert-base',
                     choices=['hfl/chinese-macbert-base', 'roberta-base', 'roberta-large', 'bert-base-uncased', 'bert-large-uncased'])
 parser.add_argument('--pretrained_bert_ckpt', default='../ckpts/epoch=34.ckpt')
@@ -51,6 +51,7 @@ parser.add_argument('--gcn_lr', type=float, default=1e-3)
 parser.add_argument('--bert_lr', type=float, default=1e-5)
 parser.add_argument('--train_val_ratio', type=float, default=0.9)
 parser.add_argument('--resume_dir', type=str, default=None)
+parser.add_argument('--test', action="store_true", default=False)
 
 # compgcn arguments
 parser.add_argument('--name', default='test_run', help='Set run name for saving/restoring models')
@@ -172,10 +173,12 @@ with open(args.data_dir, newline="") as f:
 
 docs = []
 sent_lens = []
+titles = []
 for a_id, article in enumerate(tqdm.tqdm(all_articles)):
   if not a_id:
     continue
   title, sections = article[0], ast.literal_eval(article[1])
+  titles.append(title)
   sections = [s[1] for s in sections]
   sent_len = []
   for i in range(len(sections)):
@@ -292,7 +295,7 @@ model.to(device)
 
 logger.info('loaded model')
 
-pos_ids = torch.where(edge_type==gt_edge_id)[0]
+
 
 if os.path.exists(args.triplet_cache):
     with open(args.triplet_cache, 'rb') as f:
@@ -410,6 +413,13 @@ else:
         neg_set.remove(str((obj, subj))+'_'+neg_dict[str((obj, subj))])
         triplets[s].append((obj, subj, 0))
 
+
+    # test triplets
+    
+
+
+
+
     # for i, (subj, obj) in enumerate(neg_ids):
     #     if i < :
     #         triplets['train_neg'].append((subj, obj, 0))
@@ -441,6 +451,30 @@ else:
     with open(args.triplet_cache, 'wb') as f:
         pickle.dump(triplets, f)
 
+val_node = set()
+for s, o, i in triplets['val_pos']:
+    val_node.add(s)
+    val_node.add(o)
+# for s, o, i in triplets['val_neg']:
+#     val_node.add(s)
+#     val_node.add(o)
+
+val_edge_ids = []
+# for s, o, i in triplets['train_pos']:
+#     if s in val_node or o in val_node:
+#         val_edge_ids.append(i)
+# for s, o, i in triplets['train_neg']:
+#     if s in val_node or o in val_node:
+#         val_edge_ids.append(len(triplets['train_pos'])+i)
+# for i, (s, o) in enumerate(zip(g.edges()[0], g.edges()[1])):
+#     if s.item() in val_node or o.item() in val_node:
+#         ran = random.randint(0, 1)
+#         if ran:
+#             edge_weight[i] = 0
+
+# edge_weight[triplets['val_edge_ids']] = 0
+
+edge_weight[:] = 0
 
 data_iter = {
             'train': DataLoader(
@@ -450,7 +484,8 @@ data_iter = {
                 num_workers=args.num_workers,
                 sampler=BinarySampler(len(triplets['train_pos']),
                                       len(triplets['train_neg']),
-                                      triplets['train_asym_num'])
+                                      triplets['train_asym_num'],
+                                      val_edge_ids,)
             ),
             'val': DataLoader(
                 TestBinaryDataset(triplets['val_pos'], triplets['val_neg'], 
@@ -458,7 +493,8 @@ data_iter = {
                 batch_size=args.batch_size,
                 num_workers=args.num_workers,
                 sampler=BinarySampler(len(triplets['val_pos']),
-                                      len(triplets['val_neg']))
+                                      len(triplets['val_neg']),
+                                      )
             ),
             # 'test': DataLoader(
             #     InferenceDataset(triplets['test'], test_mask.sum(), args),
@@ -495,7 +531,14 @@ logger.info('loaded triplets')
 
 # remove edges from e
 edge_weight[triplets['val_edge_ids']] = 0
+pos_ids = torch.where(edge_type==gt_edge_id)[0]
+edge_weight[pos_ids] = 0
 g.edata['weight'] = edge_weight
+gt_mask = edge_weight.clone()
+gt_mask[gt_mask!=0] = 1
+g.edata['gt_mask'] = gt_mask
+
+
 
 gcn_parameters = []
 # for n, p in model.named_parameters():
@@ -530,10 +573,12 @@ optimizer = th.optim.Adam([
     ], lr=1e-3
 )
 if args.resume_dir is not None:
+    print('resume')
     state_dict = torch.load(args.resume_dir, map_location=device)
     model_state_dict = {k:v for k, v in state_dict['model'].items() if k[-4:] != '.rel'}
     model.load_state_dict(model_state_dict)
     optimizer.load_state_dict(state_dict['optimizer'])
+    epoch = state_dict['epoch']
 
 scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[80, 160], gamma=0.1)
 
@@ -655,11 +700,16 @@ def compute_doc_embeds(subjs, objs, docs, nf):
     #     nf[s] = doc_embed
     return nf
 
+# all_test_ids = list(combinations(g.nodes()[test_mask].tolist(), 2)) + list(combinations(g.nodes()[test_mask].tolist()[::-1], 2))
+# all_test_ids = torch.tensor(all_test_ids)
+
+
 iteration = 0
 hards = []
+hards_pos = []
 def train_step(engine, batch):
     global model, bert_model, g, optimizer, docs, doc_embeds_g, rfs, device, iteration
-    global hards
+    global hards, all_test_ids, val_node
     model.train()
     optimizer.zero_grad()
 
@@ -670,13 +720,16 @@ def train_step(engine, batch):
     (subjs, objs, labels, ids) = batch
     subjs, objs, labels, ids = subjs.to(device), objs.to(device), labels.to(device), ids.to(device)
     # cum = 0
-    syms = torch.zeros_like(subjs).to(device)
+    syms = torch.ones_like(subjs).to(device)
     # for i in range(subjs.size(0)//2):
     #     if labels[i]+labels[i+1] == 1:
     #         syms[i] = 1
     #         syms[i+1] = 1 
+    # for i, (s, o) in enumerate(zip(subjs, objs)):
+    #     if s.item() in val_node or o.item() in val_node:
+    #         syms[i] = 0
 
-    rels = torch.zeros_like(subjs).long().to(device)
+    rels = torch.ones_like(subjs).long().to(device)*gt_edge_id
 
     nf = doc_embeds_g.clone()
     # nf = compute_doc_embeds(subjs, objs, docs, doc_embeds_g.clone()).float()
@@ -685,15 +738,30 @@ def train_step(engine, batch):
     # preds = model(nf, g, subj, rel, rf)  # [batch_size, num_ent]
     preds = model(nf, g, subjs, rels, objs, rf)
 
-    hard_ids = torch.where((preds.flatten().round()==1) & (labels.flatten()==0))[0]
-    if hard_ids.size(0):
+    hard_neg_ids = torch.where((preds.flatten().round()==1) & (labels.flatten()==0))[0]
+    hard_pos_ids = torch.where((preds.flatten().round()==0) & (labels.flatten()==1))[0]
+    if hard_neg_ids.size(0):
+        hard_ids = hard_neg_ids
         for id in hard_ids:
             hards.append(ids[id].item())
+    if hard_pos_ids.size(0):
+        hard_ids = hard_pos_ids
+        for id in hard_ids:
+            hards_pos.append(ids[id].item())
 
     loss = model.calc_loss(preds.flatten(), labels.flatten().float(), syms)
     
     loss.backward()
     optimizer.step()
+
+    # with torch.no_grad():
+    #     test_ids = all_test_ids[args.batch_size*iteration:args.batch_size*(iteration+1)]
+    #     test_subjs, test_objs = test_ids[:,0].to(device), test_ids[:,1].to(device)
+    #     test_rf = rfs[test_subjs, test_objs].float()
+
+    #     _ = model(nf, g, test_subjs, rels, test_objs, test_rf)
+
+
 
     f1_score = f1_loss(preds.flatten(), labels.flatten().long()).item()
     f1_score_hard = f1_loss(preds.flatten().round(), labels.flatten().long()).item()
@@ -706,11 +774,13 @@ def train_step(engine, batch):
     return loss, f1_score
 
 trainer = Engine(train_step)
+if args.resume_dir:
+    trainer.state.epoch = epoch
 
 
 @trainer.on(Events.EPOCH_COMPLETED)
 def reset_graph(trainer):
-    global triplets, doc_mask, args, hards
+    global triplets, doc_mask, args, hards, hards_pos
 
     scheduler.step()
     # update_feature()
@@ -718,6 +788,7 @@ def reset_graph(trainer):
     global iteration
     iteration = 0
     print('hards', len(hards))
+    print('hards pos', len(hards_pos))
     data = DataLoader(
                 TrainBinaryDataset(triplets['train_pos'], triplets['train_neg'], 
                              doc_mask.sum().item(), args),
@@ -726,10 +797,13 @@ def reset_graph(trainer):
                 sampler=BinarySampler(len(triplets['train_pos']),
                                       len(triplets['train_neg']),
                                       triplets['train_asym_num'],
-                                      hards=hards.copy())
+                                      hards=hards.copy(),
+                                      hards_pos=hards_pos.copy(),
+                                      neg=len(hards)>len(hards_pos))
     )
     trainer.set_data(data)
     hards = []
+    hards_pos = []
 
 def test_step(engine, batch):
     global bert_model, model, g, doc_embeds_g, rfs, device
@@ -746,7 +820,7 @@ def test_step(engine, batch):
         # subj, rel = triplets[:, 0], triplets[:, 1]
         (subjs, objs, labels, ids) = batch
         subjs, objs, labels, ids = subjs.to(device), objs.to(device), labels.to(device), ids.to(device)
-        rels = torch.zeros_like(subjs).long().to(device)
+        rels = torch.ones_like(subjs).long().to(device)*gt_edge_id
 
         # syms = torch.ones_like(subjs).to(device)*(-1)
         # for i in range(subjs.size(0)-1):
@@ -843,4 +917,57 @@ log_training_results.best_val_f1 = 0
 
 train_iter = data_iter['train']
 th.cuda.empty_cache()
-trainer.run(train_iter, max_epochs=args.nb_epochs)
+
+if args.test:
+    print('start testing')
+    # model.train()
+    batch_size = args.batch_size
+
+    # for i in tqdm.tqdm(range(all_test_ids.size(0)//batch_size+1)):
+    #     test_ids = all_test_ids[batch_size*i:batch_size*(i+1)]
+    #     subjs, objs = test_ids[:,0].to(device), test_ids[:,1].to(device)
+    #     # print(subjs.shape, objs.shape)
+    #     # subjs, objs = subj.unsqueeze(0).to(device), obj.unsqueeze(0).to(device)
+    #     rels = torch.ones_like(subjs).long().to(device)*gt_edge_id
+
+    #     nf = doc_embeds_g.clone().float()
+    #     rf = rfs[subjs, objs].float()
+
+    #     _ = model(nf, g, subjs, rels, objs, rf)
+
+    print(test_mask.sum())
+    all_test_ids = list(combinations(g.nodes()[test_mask].tolist(), 2)) + list(combinations(g.nodes()[test_mask].tolist()[::-1], 2))
+    random.shuffle(all_test_ids)
+    all_test_ids = torch.tensor(all_test_ids)
+    # all_test_ids_2 = torch.flip(all_test_ids, dims=(1,))
+    pos_titles = []
+    batch_size = args.batch_size
+    model.eval()
+    with th.no_grad():
+        for i in tqdm.tqdm(range(all_test_ids.size(0)//batch_size+1)):
+            # test_ids = torch.cat([all_test_ids[batch_size*i:batch_size*(i+1)], all_test_ids_2[batch_size*i:batch_size*(i+1)]], dim=0)
+            test_ids = all_test_ids[batch_size*i:batch_size*(i+1)]
+            subjs, objs = test_ids[:,0].to(device), test_ids[:,1].to(device)
+            # print(subjs, objs)
+            # print(subjs.shape, objs.shape)
+            # subjs, objs = subj.unsqueeze(0).to(device), obj.unsqueeze(0).to(device)
+            rels = torch.ones_like(subjs).long().to(device)*gt_edge_id
+
+            nf = doc_embeds_g.clone().float()
+            rf = rfs[subjs, objs].float()
+
+            preds = model(nf, g, subjs, rels, objs, rf)
+            
+
+            preds = preds.flatten().round()
+            # print(preds.sum())
+
+            for subj, obj, pred in zip(subjs, objs, preds):
+                if pred:
+                    pos_titles.append([titles[subj], titles[obj]])
+    with open('./inference.csv', 'w') as f:
+        writer = csv.writer(f)
+        writer.writerow(['Test', 'Reference'])
+        writer.writerows(pos_titles)
+else:
+    trainer.run(train_iter, max_epochs=args.nb_epochs)

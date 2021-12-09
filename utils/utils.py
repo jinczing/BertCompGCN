@@ -169,7 +169,7 @@ def load_multi_relations_doc(data_paths, logger):
     doc_title_to_ids = []
     for i, bert_similarity in enumerate(bert_similarities):
         doc_title_to_ids.append(bert_similarity[0])
-        ids = np.where(bert_similarity[3]>0.8)[0]
+        ids = np.where(bert_similarity[3]>0.7)[0]
         sim_num += ids.shape[0]
         for id in ids:
             edge_type.append(edge_type_num)
@@ -238,17 +238,20 @@ def load_multi_relations_doc(data_paths, logger):
     # g.add_edges(ids[0]+cum, ids[1]+cum)
     # print(g.num_edges(), len(edge_type))
 
-
-    # data_dict[('doc', 'gt', 'doc')] = []
+    ds = np.zeros((doc_num,))
+    data_dict[('doc', 'gt', 'doc')] = []
     src, dest = [], []
     for match in matching_table:
         src.append(doc_title_to_ids.index(match[0]))
         dest.append(doc_title_to_ids.index(match[1]))
+        ds[doc_title_to_ids.index(match[1])] += 1
         edge_type.append(edge_type_num)
-        edge_weight.append(1)
+        edge_weight.append(0)
     g.add_edges(src, dest)
     gt_edge_id = edge_type_num
     edge_type_num += 1
+
+    # gt_edge_id = 0
     
 
     key_tf_idfs/=np.linalg.norm(key_tf_idfs, axis=-1, keepdims=True)
@@ -259,7 +262,7 @@ def load_multi_relations_doc(data_paths, logger):
 
     key_num = 0
     for i in range(doc_num):
-        ids = np.where(key_sim[i]>0.8)[0]
+        ids = np.where(key_sim[i]>0.5)[0]
         key_num += ids.shape[0]
         for id in ids:
             if i == id: continue
@@ -278,7 +281,7 @@ def load_multi_relations_doc(data_paths, logger):
 
     ne_num = 0
     for i in range(doc_num):
-        ids = np.where(ne_sim[i]>0.7)[0]
+        ids = np.where(ne_sim[i]>0.2)[0]
         ne_num += ids.shape[0]
         for id in ids:
             if i == id: continue
@@ -295,11 +298,37 @@ def load_multi_relations_doc(data_paths, logger):
             if i==j: continue
             rfs[i, j, 3] = ne_sim[i][j]
 
+    key_inclusion_num = 0
+    # for i in range(doc_num):
+    #     ids = np.where(key_inclusions[i]>0.5)[0]
+    #     key_inclusion_num += ids.shape[0]
+    #     for id in ids:
+    #         if i == id: continue
+    #         edge_type.append(edge_type_num)
+    #         edge_weight.append(key_inclusions[i][id])
+    #         # rfs[i, id, 2] = ne_sim[i][id]
+    #     ids = ids[ids!=i]
+    #     g.add_edges(i, ids)
+    # edge_type_num += 1
+
     key_inclusions[np.isnan(key_inclusions)] = 0
     for i in range(doc_num):
         for j in range(doc_num):
             if i==j: continue
             rfs[i, j, 4] = key_inclusions[i][j]
+
+    ne_inclusion_num = 0
+    # for i in range(doc_num):
+    #     ids = np.where(ne_inclusions[i]>0.5)[0]
+    #     ne_inclusion_num += ids.shape[0]
+    #     for id in ids:
+    #         if i == id: continue
+    #         edge_type.append(edge_type_num)
+    #         edge_weight.append(ne_inclusions[i][id])
+    #         # rfs[i, id, 2] = ne_sim[i][id]
+    #     ids = ids[ids!=i]
+    #     g.add_edges(i, ids)
+    # edge_type_num += 1
 
     ne_inclusions[np.isnan(ne_inclusions)] = 0
     for i in range(doc_num):
@@ -307,13 +336,13 @@ def load_multi_relations_doc(data_paths, logger):
             if i==j: continue
             rfs[i, j, 5] = ne_inclusions[i][j]
 
-    print('key ne', key_num, ne_num)
+    print('key ne', key_num, ne_num, key_inclusion_num, ne_inclusion_num)
 
     g.add_edges(g.edges()[1], g.edges()[0])
     edge_type += list(map(lambda x:x+edge_type_num, edge_type))
     edge_weight *= 2
 
-    in_deg = g.in_degrees(range(g.number_of_nodes())).float()
+    in_deg = g.in_degrees(range(g.number_of_nodes())).float() - torch.from_numpy(ds).float()
     norm = in_deg ** -0.5
     norm[torch.isinf(norm)] = 0
     g.ndata['xxx'] = norm
@@ -543,10 +572,12 @@ def load_multi_relations_corpus(data_paths, logger):
     # g.add_edges(ids[0]+cum, ids[1]+cum)
 
     # data_dict[('doc', 'gt', 'doc')] = []
+    ds = np.zeros((doc_num,))
     src, dest = [], []
     for match in matching_table:
         src.append(doc_title_to_ids.index(match[0])+cum)
         dest.append(doc_title_to_ids.index(match[1])+cum)
+        ds[doc_title_to_ids.index(match[1])+cum] += 1
         edge_type.append(edge_type_num)
         edge_weight.append(1)
     g.add_edges(src, dest)
